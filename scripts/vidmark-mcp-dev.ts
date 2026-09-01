@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { startVidmarkMcpServer } from "./vidmark-mcp";
 
 const dataDirectory = process.env.VIDMARK_DATA_DIR || join(homedir(), "Library", "Application Support", "Vidmark");
-const service = await startVidmarkMcpServer(join(dataDirectory, "vidmark.sqlite"), { legacyStatePath: join(dataDirectory, "mcp-state.json") });
+const service = await startVidmarkMcpServer(join(dataDirectory, "vidmark.sqlite"));
 let stopping = false;
 const stop = () => {
   if (stopping) return;

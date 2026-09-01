@@ -1,13 +1,10 @@
 import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import bundledConceptGraph from "../data/concept-graph.json";
 import questionBank from "../data/question-bank.json";
 import { validateConceptGraph, type ConceptGraph } from "../app/concept-graph-types";
 
 export const STARTER_COURSE_ID = "reDRM0tqhNs";
 export const PUBLIC_RELAY_URL = "wss://vidmark-159-223-136-163.sslip.io/ws";
-const LEGACY_LOCAL_RELAY_URL = "ws://127.0.0.1:31800/ws";
 
 export type ProfileRecord = {
   id: string;
@@ -101,7 +98,7 @@ export type DesktopNotificationRecord = {
   createdAt: number;
 };
 
-type LegacyCourse = {
+type CourseInput = {
   id: string;
   title: string;
   source?: string;
@@ -115,12 +112,6 @@ type LegacyCourse = {
   researchNotes?: string;
   conceptGraph?: unknown;
   updatedAt?: number;
-};
-
-type LegacyState = {
-  activeCourseId?: string;
-  courses?: LegacyCourse[];
-  notes?: Array<Record<string, unknown>>;
 };
 
 const now = () => Date.now();
@@ -331,20 +322,6 @@ export class VidmarkDatabase {
     this.db.exec("UPDATE courses SET video_id=id WHERE video_id='' OR video_id IS NULL");
   }
 
-  async importLegacyState(legacyPath?: string) {
-    if (!legacyPath || !existsSync(legacyPath)) return;
-    const imported = this.db.query("SELECT value FROM app_meta WHERE key = 'legacy_json_imported'").get() as { value: string } | null;
-    if (imported) return;
-    let state: LegacyState;
-    try { state = JSON.parse(await readFile(legacyPath, "utf8")) as LegacyState; }
-    catch { return; }
-    this.db.transaction(() => {
-      for (const course of state.courses ?? []) this.upsertCourse({ ...course, active: course.id === state.activeCourseId });
-      for (const note of state.notes ?? []) this.upsertNote(note);
-      this.db.query("INSERT OR REPLACE INTO app_meta(key, value) VALUES ('legacy_json_imported', ?)").run(String(now()));
-    })();
-  }
-
   private seedBundledQuestionBank() {
     const timestamp = now();
     this.db.query(`INSERT OR IGNORE INTO courses(id,title,source,video_url,origin_prompt,prompt_credit,active,created_at,updated_at)
@@ -381,11 +358,6 @@ export class VidmarkDatabase {
       autoImportQuestions: false,
       relayUrl: preferredRelayUrl,
     });
-    if (!process.env.VIDMARK_RELAY_URL && preferences.relayUrl === LEGACY_LOCAL_RELAY_URL) {
-      const migrated = { ...preferences, relayUrl: preferredRelayUrl };
-      this.setMeta("sync_preferences", migrated);
-      return migrated;
-    }
     return preferences;
   }
 
@@ -401,7 +373,7 @@ export class VidmarkDatabase {
     return preferences;
   }
 
-  upsertCourse(input: LegacyCourse & { active?: boolean }) {
+  upsertCourse(input: CourseInput & { active?: boolean }) {
     const existing = this.db.query("SELECT * FROM courses WHERE id = ?").get(input.id) as Record<string, unknown> | null;
     const timestamp = now();
     const videoUrl = input.videoUrl ?? String(existing?.video_url ?? "");

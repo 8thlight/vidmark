@@ -24,11 +24,10 @@ const textResult = (value: unknown) => ({ content: [{ type: "text" as const, tex
 const parseRecord = (value: string, label: string) => { const parsed = JSON.parse(value) as unknown; if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${label} must be a JSON object.`); return parsed as Record<string, unknown>; };
 const parseArray = (value: string | undefined, label: string) => { if (!value) return undefined; const parsed = JSON.parse(value) as unknown; if (!Array.isArray(parsed)) throw new Error(`${label} must be a JSON array.`); return parsed; };
 
-export async function startVidmarkMcpServer(databasePath: string, options: { legacyStatePath?: string; systemPromptsPath?: string } = {}) {
+export async function startVidmarkMcpServer(databasePath: string, options: { systemPromptsPath?: string } = {}) {
   await mkdir(dirname(databasePath), { recursive: true });
   const systemPromptsPath = options.systemPromptsPath ?? join(dirname(databasePath), "system-prompts.json");
   const store = new VidmarkDatabase(databasePath);
-  await store.importLegacyState(options.legacyStatePath);
   const sync = await new VidmarkSyncService(store).start();
   const handler = createMcpHandler(() => {
     const server = new McpServer({ name: "vidmark-local", version: "3.1.0" }, { capabilities: { tools: {}, prompts: {} } });
@@ -107,7 +106,7 @@ export async function startVidmarkMcpServer(databasePath: string, options: { leg
     try {
       if (url.pathname === "/health") return Response.json({ ok: true, name: "vidmark-local", version: "3.2.0", mcp: `http://127.0.0.1:${MCP_PORT}/mcp`, databasePath, sync: sync.getStatus() }, { headers });
       if (url.pathname === "/state" && request.method === "GET") return Response.json({ activeCourseId: store.listCourses().find((course) => course.active)?.id ?? "", courses: store.listCourses(), notes: store.listNotes(), profile: store.getProfile() }, { headers });
-      if (url.pathname === "/state/sync" && request.method === "POST") { const incoming = await request.json() as { activeCourseId?: string; courses?: LegacySyncCourse[]; notes?: Array<Record<string, unknown>> }; for (const course of incoming.courses ?? []) store.upsertCourse({ ...course, active: course.id === incoming.activeCourseId }); for (const note of incoming.notes ?? []) store.upsertNote(note); return Response.json({ ok: true, courses: store.listCourses().length, notes: store.listNotes().length }, { headers }); }
+      if (url.pathname === "/state/sync" && request.method === "POST") { const incoming = await request.json() as { activeCourseId?: string; courses?: BrowserSyncCourse[]; notes?: Array<Record<string, unknown>> }; for (const course of incoming.courses ?? []) store.upsertCourse({ ...course, active: course.id === incoming.activeCourseId }); for (const note of incoming.notes ?? []) store.upsertNote(note); return Response.json({ ok: true, courses: store.listCourses().length, notes: store.listNotes().length }, { headers }); }
       if (url.pathname === "/api/profile") { if (request.method === "GET") return Response.json({ profile: store.getProfile() }, { headers }); if (request.method === "POST") { const profile = store.saveProfile(await request.json() as { name: string; email: string; avatarStyle: string; avatarSeed: string }); await sync.registerDirectory(); return Response.json({ profile }, { headers }); } }
       if (url.pathname === "/api/preferences") { if (request.method === "GET") return Response.json({ preferences: store.getSyncPreferences() }, { headers }); if (request.method === "POST") { const preferences = store.saveSyncPreferences(await request.json() as { autoImportQuestions?: boolean; relayUrl?: string }); sync.refreshRelay(); return Response.json({ preferences }, { headers }); } }
       if (url.pathname === "/api/system-prompts") { if (request.method === "GET") return Response.json(await getSystemPromptSettings(systemPromptsPath), { headers }); if (request.method === "PUT") return Response.json(await writeSystemPromptOverrides(systemPromptsPath, (await request.json() as { overrides?: unknown }).overrides), { headers }); }
@@ -151,4 +150,4 @@ export async function startVidmarkMcpServer(databasePath: string, options: { leg
   console.log(`Vidmark MCP 3.1 is listening at http://127.0.0.1:${MCP_PORT}/mcp with SQLite at ${databasePath}`);
   return { stop(force = false) { sync.stop(); server.stop(force); store.close(); }, store, sync, server };
 }
-type LegacySyncCourse = { id: string; title: string; source?: string; videoUrl?: string; originPrompt?: string; promptCredit?: string; transcript?: Array<{ time: number; text: string }>; conceptGraph?: unknown };
+type BrowserSyncCourse = { id: string; title: string; source?: string; videoUrl?: string; originPrompt?: string; promptCredit?: string; transcript?: Array<{ time: number; text: string }>; conceptGraph?: unknown };

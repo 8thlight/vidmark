@@ -58,8 +58,7 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS course_share_links (
     token TEXT PRIMARY KEY,
     creator_device_id TEXT NOT NULL,
-    encrypted_payload TEXT NOT NULL DEFAULT '',
-    payload_json TEXT,
+    payload_json TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     revoked_at INTEGER,
@@ -105,6 +104,7 @@ if (!shareLinkColumns.has("payload_json")) database.exec("ALTER TABLE course_sha
 if (!shareLinkColumns.has("revoked_at")) database.exec("ALTER TABLE course_share_links ADD COLUMN revoked_at INTEGER");
 if (!shareLinkColumns.has("max_uses")) database.exec("ALTER TABLE course_share_links ADD COLUMN max_uses INTEGER NOT NULL DEFAULT 0");
 if (!shareLinkColumns.has("use_count")) database.exec("ALTER TABLE course_share_links ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0");
+if (shareLinkColumns.has("encrypted_payload")) database.exec("ALTER TABLE course_share_links DROP COLUMN encrypted_payload");
 
 const sockets = new Map<string, Set<ServerWebSocket<ClientState>>>();
 const sendJson = (socket: ServerWebSocket<ClientState>, value: unknown) => socket.send(JSON.stringify(value));
@@ -134,7 +134,7 @@ const server = Bun.serve<ClientState>({
     }
     const inviteRoute = url.pathname.match(/^\/invite\/([^/]+)$/);
     if ((request.method === "GET" || request.method === "HEAD") && inviteRoute) {
-      const invite = database.query("SELECT expires_at,revoked_at,max_uses,use_count FROM course_share_links WHERE token=?").get(inviteRoute[1]) as Record<string, unknown> | null;
+      const invite = database.query("SELECT expires_at,revoked_at,max_uses,use_count FROM course_share_links WHERE token=? AND payload_json IS NOT NULL").get(inviteRoute[1]) as Record<string, unknown> | null;
       const active = Boolean(invite && !invite.revoked_at && Number(invite.expires_at) > Date.now() && (!Number(invite.max_uses) || Number(invite.use_count) < Number(invite.max_uses)));
       if (!active) return new Response("Vidmark invite not found or expired.", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
       return new Response(request.method === "HEAD" ? null : "This is a Vidmark course invitation. Copy this URL into Vidmark’s Share panel to review the course before importing it.", { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
@@ -206,13 +206,12 @@ const server = Bun.serve<ClientState>({
           const token = String(message.token ?? ""); const payloadJson = JSON.stringify(message.payload ?? null);
           if (!validId(token) || message.payload === undefined || Buffer.byteLength(payloadJson) > maxEnvelopeBytes) throw new Error("Course share link payload is invalid or too large.");
           const expiresAt = Math.min(Number(message.expiresAt ?? Date.now() + retentionMs), Date.now() + retentionMs);
-          database.query("INSERT INTO course_share_links(token,creator_device_id,encrypted_payload,payload_json,created_at,expires_at,max_uses,use_count) VALUES (?,?,\"\",?,?,?,?,0)").run(token, socket.data.deviceId, payloadJson, Date.now(), expiresAt, message.oneTime ? 1 : 0);
+          database.query("INSERT INTO course_share_links(token,creator_device_id,payload_json,created_at,expires_at,max_uses,use_count) VALUES (?,?,?,?,?,?,0)").run(token, socket.data.deviceId, payloadJson, Date.now(), expiresAt, message.oneTime ? 1 : 0);
           respond({ token, expiresAt, oneTime: Boolean(message.oneTime) }); return;
         }
         if (message.type === "link_resolve") {
-          const row = database.query("SELECT payload_json,expires_at,max_uses,use_count FROM course_share_links WHERE token=? AND expires_at>? AND revoked_at IS NULL AND (max_uses=0 OR use_count<max_uses)").get(String(message.token ?? ""), Date.now()) as Record<string, unknown> | null;
+          const row = database.query("SELECT payload_json,expires_at,max_uses,use_count FROM course_share_links WHERE token=? AND payload_json IS NOT NULL AND expires_at>? AND revoked_at IS NULL AND (max_uses=0 OR use_count<max_uses)").get(String(message.token ?? ""), Date.now()) as Record<string, unknown> | null;
           if (!row) throw new Error("This course share link is missing or expired.");
-          if (!row.payload_json) throw new Error("This legacy encrypted link is no longer supported. Ask the sender for a new HTTPS invite.");
           database.query("UPDATE course_share_links SET use_count=use_count+1 WHERE token=?").run(String(message.token));
           respond({ payload: JSON.parse(String(row.payload_json)), expiresAt: row.expires_at, remainingUses: Number(row.max_uses) ? Math.max(0, Number(row.max_uses) - Number(row.use_count) - 1) : null }); return;
         }
