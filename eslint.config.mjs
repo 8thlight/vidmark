@@ -36,6 +36,11 @@ const eslintConfig = defineConfig([
         version: "detect",
       },
     },
+    rules: {
+      // Vidmark renders inside a native WKWebView and uses local DiceBear data URIs;
+      // Next's hosted image optimizer is not part of the packaged runtime.
+      "@next/next/no-img-element": "off",
+    },
   },
 ]);
 
