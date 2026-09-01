@@ -17,8 +17,12 @@ test("server-renders the Vidmark workspace", async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
+  const visibleHtml = html.replace(/<!--.*?-->/gs, "");
   assert.match(html, /Vidmark — YouTube Study Library/i);
   assert.match(html, /Claude Certified Architect/i);
   assert.match(html, /Video library/i);
+  assert.match(visibleHtml, /2\s+courses/i);
+  assert.match(html, /exam scenarios/i);
+  assert.match(html, /<strong>100<\/strong><span>exam scenarios<\/span>/i);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });

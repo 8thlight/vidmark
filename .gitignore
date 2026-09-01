@@ -38,3 +38,8 @@ yarn-error.log*
 /.wrangler/
 /outputs/
 /work/
+/.venv/
+.vidmark/
+.tools/
+build/
+*.tsbuildinfo

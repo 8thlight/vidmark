@@ -23,7 +23,7 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title,
     description,
-    icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
+    icons: { icon: "/vidmark-mark.png", shortcut: "/vidmark-mark.png", apple: "/vidmark-mark.png" },
     openGraph: { title, description, images: [{ url: socialImage, width: 1672, height: 941, alt: "Vidmark video study library" }] },
     twitter: { card: "summary_large_image", title, description, images: [socialImage] },
   };

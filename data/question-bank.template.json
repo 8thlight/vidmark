@@ -1,0 +1,102 @@
+{
+  "$schema": "./question-bank.schema.json",
+  "schemaVersion": "1.0.0",
+  "bankId": "ccaf-practice-bank",
+  "title": "Claude Certified Architect Foundations Practice Bank",
+  "updatedAt": "2026-08-19",
+  "disclaimer": "Original practice questions grounded in the published blueprint and documentation. Not sourced from the live exam bank.",
+  "domains": [
+    {
+      "id": "architecture",
+      "name": "Agentic Architecture & Orchestration",
+      "weight": 27
+    },
+    {
+      "id": "tools",
+      "name": "Tool Design & MCP Integration",
+      "weight": 18
+    },
+    {
+      "id": "code",
+      "name": "Claude Code Configuration & Workflows",
+      "weight": 20
+    },
+    {
+      "id": "prompting",
+      "name": "Prompt Engineering & Structured Output",
+      "weight": 20
+    },
+    {
+      "id": "context",
+      "name": "Context Management & Reliability",
+      "weight": 15
+    }
+  ],
+  "sections": [
+    { "id": "introduction", "title": "Introduction", "videoStartSeconds": 47 },
+    { "id": "sdk-environment-setup", "title": "SDK environment setup", "videoStartSeconds": 617 },
+    { "id": "agentic-loop-foundations", "title": "Agentic loop foundations", "videoStartSeconds": 2856 },
+    { "id": "multi-agent-orchestration", "title": "Multi-agent orchestration", "videoStartSeconds": 6773 },
+    { "id": "advanced-agent-patterns", "title": "Advanced agent patterns", "videoStartSeconds": 15346 },
+    { "id": "sessions-context-state", "title": "Sessions, context & state", "videoStartSeconds": 24472 },
+    { "id": "configuration-permissions-safety", "title": "Configuration, permissions & safety", "videoStartSeconds": 27110 },
+    { "id": "built-in-tooling", "title": "Built-in tooling", "videoStartSeconds": 32332 },
+    { "id": "reliability-output-quality", "title": "Reliability & output quality", "videoStartSeconds": 34743 },
+    { "id": "scaling-context", "title": "Scaling context", "videoStartSeconds": 38639 },
+    { "id": "mcp-ecosystem-integration", "title": "MCP ecosystem integration", "videoStartSeconds": 41391 },
+    { "id": "claude-code-ci-cd", "title": "Claude Code in CI/CD", "videoStartSeconds": 42079 },
+    { "id": "scenario-based-architecture", "title": "Scenario-based architecture", "videoStartSeconds": 44097 }
+  ],
+  "questions": [
+    {
+      "id": "prompting-structured-001",
+      "enabled": true,
+      "sectionId": "reliability-output-quality",
+      "domainId": "prompting",
+      "difficulty": "standard",
+      "mode": "standard",
+      "scenario": "A claims service must return a JSON object with an enum action, a numeric confidence score, and a nullable escalation_reason. Downstream automation rejects any response that does not match the schema, and retrying malformed output is not permitted.",
+      "question": "Which implementation most directly satisfies the requirement?",
+      "options": {
+        "A": {
+          "text": "Describe the JSON format in the system prompt, include two examples, and set temperature to zero.",
+          "rationale": "Examples and low temperature may improve consistency, but they do not guarantee schema conformance."
+        },
+        "B": {
+          "text": "Set output_config.format to the required JSON Schema and validate the returned object before the automation uses it.",
+          "rationale": "Structured outputs constrain the final response to the supplied schema, and application validation preserves the downstream trust boundary."
+        },
+        "C": {
+          "text": "Define a strict tool whose input has the same schema, even though the workflow never needs to call a tool.",
+          "rationale": "Strict tool use governs tool arguments; it is not the correct mechanism for constraining a final response when no tool call is needed."
+        },
+        "D": {
+          "text": "Ask Claude to place the JSON in a fenced code block and parse the block with a repair library.",
+          "rationale": "Repairing malformed output is probabilistic and violates the scenario's no-retry requirement."
+        }
+      },
+      "correctAnswer": "B",
+      "grading": {
+        "temptingDistractor": "A",
+        "principle": "Use a constrained mechanism when a scenario demands a guarantee; prompting is not a schema contract.",
+        "missType": "judgment",
+        "hinge": "The requirement says malformed output cannot be retried."
+      },
+      "videoReferences": [
+        {
+          "timestampSeconds": 34743,
+          "label": "Reliability and structured output discussion",
+          "screenshot": "/screenshots/reliability.jpg"
+        }
+      ],
+      "sources": [
+        {
+          "label": "Anthropic: Structured outputs",
+          "url": "https://platform.claude.com/docs/en/build-with-claude/structured-outputs",
+          "accessedAt": "2026-08-19"
+        }
+      ],
+      "tags": ["structured-output", "json-schema", "guarantees"]
+    }
+  ]
+}
