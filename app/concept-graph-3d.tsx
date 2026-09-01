@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import graph from "../data/concept-graph.json";
+import type { ConceptGraph } from "./concept-graph-types";
 
 const domainColors: Record<string, number> = {
   architecture: 0xff654c,
@@ -10,11 +10,13 @@ const domainColors: Record<string, number> = {
   prompting: 0xe9aa31,
   context: 0xa98cdf,
 };
+const fallbackColors = [0xff654c, 0x5d9ce6, 0x43b2a4, 0xe9aa31, 0xa98cdf, 0xe66fa9, 0x79b85a];
+const domainColor = (domainId: string) => domainColors[domainId] ?? fallbackColors[[...domainId].reduce((sum, character) => sum + character.charCodeAt(0), 0) % fallbackColors.length];
 
-export function ConceptGraph3D() {
+export function ConceptGraph3D({ graph }: { graph: ConceptGraph }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const [selectedId, setSelectedId] = useState("tool-contract-design");
-  const selected = graph.nodes.find((node) => node.id === selectedId) ?? graph.nodes[0];
+  const [selectedId, setSelectedId] = useState(() => graph.nodes.find((node) => node.kind === "concept")?.id ?? graph.nodes[0]?.id ?? "");
+  const selected = (graph.nodes.find((node) => node.id === selectedId) ?? graph.nodes.find((node) => node.kind === "concept") ?? graph.nodes[0])!;
   const connections = graph.edges
     .filter((edge) => edge.type !== "contains" && (edge.source === selected.id || edge.target === selected.id))
     .sort((a, b) => b.weight - a.weight)
@@ -62,7 +64,7 @@ export function ConceptGraph3D() {
       const positions = new Map<string, InstanceType<typeof THREE.Vector3>>();
       const clickable: InstanceType<typeof THREE.Mesh>[] = [];
       const conceptNodes = graph.nodes.filter((node) => node.kind === "concept");
-      const domains = Object.keys(domainColors);
+      const domains = [...new Set(conceptNodes.map((node) => node.domainId))];
       conceptNodes.forEach((node, index) => {
         const domainIndex = domains.indexOf(node.domainId);
         const groupItems = conceptNodes.filter((item) => item.domainId === node.domainId);
@@ -77,7 +79,7 @@ export function ConceptGraph3D() {
         );
         positions.set(node.id, position);
         const geometry = new THREE.SphereGeometry(2.5, 22, 18);
-        const material = new THREE.MeshStandardMaterial({ color: domainColors[node.domainId], roughness: 0.36, metalness: 0.08 });
+        const material = new THREE.MeshStandardMaterial({ color: domainColor(node.domainId), roughness: 0.36, metalness: 0.08 });
         const mesh = new THREE.Mesh(geometry, material);
         mesh.position.copy(position);
         mesh.userData.nodeId = node.id;
@@ -163,11 +165,11 @@ export function ConceptGraph3D() {
     })();
 
     return () => { disposed = true; cleanup(); };
-  }, []);
+  }, [graph]);
 
   return (
     <section className="concept-map-card">
-      <header><div><span>40 CONCEPTS · 83 RELATIONSHIPS</span><h2>Concept map</h2></div><div className="graph-hints"><span>↻ Orbit</span><span>＋ Zoom</span><span>⌖ Select</span></div></header>
+      <header><div><span>{graph.nodes.filter((node) => node.kind === "concept").length} CONCEPTS · {graph.edges.filter((edge) => edge.type !== "contains").length} RELATIONSHIPS</span><h2>{graph.title ?? "Concept map"}</h2></div><div className="graph-hints"><span>↻ Orbit</span><span>＋ Zoom</span><span>⌖ Select</span></div></header>
       <div className="concept-map-layout">
         <div ref={hostRef} className="concept-canvas" />
         <aside className="concept-detail">
@@ -175,7 +177,7 @@ export function ConceptGraph3D() {
           <h3>{selected.label}</h3>
           <p>{selected.summary}</p>
           <h4>Strongest connections</h4>
-          <ul>{connections.map((connection) => <li key={`${connection.source}-${connection.target}-${connection.type}`}><button type="button" onClick={() => connection.node && setSelectedId(connection.node.id)}><i style={{ background: `#${domainColors[connection.node?.domainId ?? "context"].toString(16).padStart(6, "0")}` }} />{connection.node?.label}</button><b>{Math.round(connection.weight * 100)}%</b></li>)}</ul>
+          <ul>{connections.map((connection) => <li key={`${connection.source}-${connection.target}-${connection.type}`}><button type="button" onClick={() => connection.node && setSelectedId(connection.node.id)}><i style={{ background: `#${domainColor(connection.node?.domainId ?? "default").toString(16).padStart(6, "0")}` }} />{connection.node?.label}</button><b>{Math.round(connection.weight * 100)}%</b></li>)}</ul>
           <small>Connections express learning relevance, not live-exam probability.</small>
         </aside>
       </div>

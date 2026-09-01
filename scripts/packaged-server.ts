@@ -95,7 +95,10 @@ async function main() {
   const python = join(projectRoot, ".venv", "bin", "python");
   const whisperScript = join(resourcesDir, "whisper-worker.py");
   const logDir = join(process.env.HOME ?? tmpdir(), "Library", "Logs", "Vidmark");
-  const mcpStatePath = join(process.env.HOME ?? tmpdir(), "Library", "Application Support", "Vidmark", "mcp-state.json");
+  const dataDirectory = process.env.VIDMARK_DATA_DIR || join(process.env.HOME ?? tmpdir(), "Library", "Application Support", "Vidmark");
+  const mcpStatePath = join(dataDirectory, "mcp-state.json");
+  const databasePath = join(dataDirectory, "vidmark.sqlite");
+  const systemPromptsPath = join(dataDirectory, "system-prompts.json");
   const providerSettingsPath = join(process.env.HOME ?? tmpdir(), "Library", "Application Support", "Vidmark", "model-provider.json");
   const noteStoragePath = join(process.env.HOME ?? tmpdir(), "Library", "Application Support", "Vidmark", "notes");
   await mkdir(logDir, { recursive: true });
@@ -107,8 +110,8 @@ async function main() {
     stderr: "inherit",
   });
   const transcription = Bun.spawn([process.execPath, "--transcription"], { stdout: "inherit", stderr: "inherit" });
-  const mcp = startVidmarkMcpServer(mcpStatePath);
-  const provider = startModelProviderServer(providerSettingsPath, mcpStatePath);
+  const mcp = await startVidmarkMcpServer(databasePath, { legacyStatePath: mcpStatePath, systemPromptsPath });
+  const provider = startModelProviderServer(providerSettingsPath, databasePath, systemPromptsPath);
   const noteStorage = startNoteStorageServer(noteStoragePath);
   const app = await startProdServer({ port: APP_PORT, host: "127.0.0.1", outDir: join(resourcesDir, "dist") });
 

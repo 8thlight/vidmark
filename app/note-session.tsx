@@ -2,8 +2,10 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, FileText, Mic, Save, Square, Trash2, X } from "lucide-react";
+import { Check, FileText, Mic, Save, Share2, Square, Trash2, X } from "lucide-react";
+import { DirectoryRecipientPicker } from "./directory-recipient-picker";
 import { removeNote, StudyNote, writeNote } from "./notes-store";
+import type { DirectoryUser } from "./vidmark-client";
 import { VoiceNote } from "./voice-note";
 
 const wavFromChunks = (chunks: Float32Array[], sampleRate: number) => {
@@ -19,7 +21,7 @@ const wavFromChunks = (chunks: Float32Array[], sampleRate: number) => {
   return new Blob([buffer], { type: "audio/wav" });
 };
 
-export function NoteSession({ open, onClose, notes, courseId, chapterId, chapterTitle, onNotesChanged }: { open: boolean; onClose: () => void; notes: StudyNote[]; courseId: string; chapterId: string; chapterTitle: string; onNotesChanged: () => Promise<void> }) {
+export function NoteSession({ open, onClose, notes, courseId, chapterId, chapterTitle, onNotesChanged, onShareNote }: { open: boolean; onClose: () => void; notes: StudyNote[]; courseId: string; chapterId: string; chapterTitle: string; onNotesChanged: () => Promise<void>; onShareNote: (note: StudyNote, recipient: DirectoryUser) => Promise<void> }) {
   const [draft, setDraft] = useState("");
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -27,6 +29,7 @@ export function NoteSession({ open, onClose, notes, courseId, chapterId, chapter
   const [saving, setSaving] = useState(false);
   const [saveSucceeded, setSaveSucceeded] = useState(false);
   const [saveLocation, setSaveLocation] = useState<"disk" | "browser">("disk");
+  const [sharingNoteId, setSharingNoteId] = useState<string | null>(null);
   const [hasVoiceTranscript, setHasVoiceTranscript] = useState(false);
   const [voiceAudio, setVoiceAudio] = useState<Blob | null>(null);
   const [voiceDuration, setVoiceDuration] = useState<number | undefined>();
@@ -198,6 +201,7 @@ export function NoteSession({ open, onClose, notes, courseId, chapterId, chapter
   };
 
   const deleteNote = async (id: string) => { await removeNote(id); await onNotesChanged(); };
+  const shareNote = async (note: StudyNote, recipient: DirectoryUser) => { setStatus(`Sending an encrypted note to ${recipient.profile.name}…`); try { await onShareNote(note, recipient); setSharingNoteId(null); setStatus(`Note shared securely with ${recipient.profile.name}. It will be delivered when their Vidmark app syncs.`); } catch (error) { setStatus(error instanceof Error ? error.message : "The note could not be shared."); } };
   const closeSession = () => { setStatus("Notes and recordings are saved to this Mac."); onClose(); };
 
   if (!open) return null;
@@ -207,6 +211,6 @@ export function NoteSession({ open, onClose, notes, courseId, chapterId, chapter
     <form onSubmit={save} className="note-composer"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Type a note, or record a voice note to transcribe locally…" /><div className="recording-tools"><label className="mic-selector"><Mic aria-hidden="true" /><span>Microphone</span><select value={selectedMicrophone} onChange={(event) => setSelectedMicrophone(event.target.value)} disabled={recording || transcribing}><option value="">Default microphone</option>{microphones.map((microphone, index) => <option value={microphone.deviceId} key={microphone.deviceId}>{microphone.label || `Microphone ${index + 1}`}</option>)}</select></label><div className={`waveform ${recording ? "live" : ""}`}><canvas ref={waveform} aria-label={recording ? "Live microphone waveform" : "Microphone waveform preview"} /></div></div><div className="note-actions"><button className={`record-button ${recording ? "recording" : ""}`} type="button" disabled={transcribing} onClick={recording ? stopAndTranscribe : startRecording}>{recording ? <Square aria-hidden="true" /> : <Mic aria-hidden="true" />}{recording ? "Stop & transcribe" : transcribing ? "Transcribing…" : "Record voice note"}</button><motion.button className="save-note" type="submit" disabled={!draft.trim() || recording || transcribing || saving} animate={saveSucceeded ? { backgroundColor: "#258451", scale: [1, 1.05, 1] } : { backgroundColor: "#0c1a31", scale: 1 }} transition={{ duration: 0.3 }}>{saveSucceeded ? <Check aria-hidden="true" /> : <Save aria-hidden="true" />}{saveSucceeded ? "Saved" : saving ? "Saving…" : "Save note"}</motion.button></div></form>
     <p className="note-status" role="status">{status}</p>
     <AnimatePresence>{saveSucceeded && <motion.div className="note-save-toast" role="status" initial={{ opacity: 0, y: 8, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.96 }} transition={{ duration: 0.18 }}><Check aria-hidden="true" /> {saveLocation === "disk" ? "Saved to this Mac" : "Saved in browser storage"}</motion.div>}</AnimatePresence>
-    <div className="note-list">{notes.length ? notes.map((note) => <article key={note.id}><div><span>{new Date(note.updatedAt).toLocaleString()} · {note.chapterTitle}</span>{note.source === "voice" ? <VoiceNote note={note} /> : <p>{note.text}</p>}</div><div className="note-row-actions" title={note.source === "voice" ? "Voice note" : "Text note"}>{note.source === "voice" ? <Mic aria-hidden="true" /> : <FileText aria-hidden="true" />}<button type="button" aria-label="Delete note" onClick={() => deleteNote(note.id)}><Trash2 aria-hidden="true" /></button></div></article>) : <p className="note-empty">No saved notes yet.</p>}</div>
+    <div className="note-list">{notes.length ? notes.map((note) => <div className="note-share-item" key={note.id}><article><div><span>{new Date(note.updatedAt).toLocaleString()} · {note.chapterTitle}{note.sharedFromPeer ? ` · Shared by ${note.authorProfile?.name ?? "a Vidmark user"}` : ""}</span>{note.source === "voice" ? <VoiceNote note={note} /> : <p>{note.text}</p>}</div><div className="note-row-actions" title={note.sharedFromPeer ? "Shared note" : note.source === "voice" ? "Voice note" : "Text note"}>{note.source === "voice" ? <Mic aria-hidden="true" /> : <FileText aria-hidden="true" />}{note.sharedFromPeer ? <Check aria-label="Shared by another user" /> : <><button type="button" aria-label="Share note with a Vidmark user" onClick={() => setSharingNoteId((current) => current === note.id ? null : note.id)}><Share2 aria-hidden="true" /></button><button type="button" aria-label="Delete note" onClick={() => void deleteNote(note.id)}><Trash2 aria-hidden="true" /></button></>}</div></article>{sharingNoteId === note.id ? <div className="note-recipient-picker"><b>Share this note</b><small>Search for a registered user. No email is sent.</small><DirectoryRecipientPicker actionLabel="Share note" onSelect={(recipient) => shareNote(note, recipient)} /></div> : null}</div>) : <p className="note-empty">No saved notes yet.</p>}</div>
   </section></dialog>;
 }

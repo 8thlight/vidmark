@@ -44,9 +44,10 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    cacheDir: process.env.VIDMARK_VITE_CACHE_DIR ?? "node_modules/.vite",
     server: {
       host: "0.0.0.0",
-      port: 3010,
+      port: Number(process.env.VIDMARK_APP_PORT ?? 3010),
       ...(isCodexSeatbeltSandbox
         ? { watch: { useFsEvents: false, usePolling: true } }
         : {}),

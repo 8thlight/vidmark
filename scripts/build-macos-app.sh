@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 APP="$ROOT/build/Vidmark.app"
 BUN="$ROOT/.tools/bun/bin/bun"
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/packaging/Info.plist")"
+MCPB="$ROOT/releases/Vidmark-$VERSION.mcpb"
 ICON_SOURCE="$ROOT/public/vidmark-mark.png"
 ICONSET="$ROOT/build/Vidmark.iconset"
 
@@ -21,7 +23,10 @@ if /usr/bin/curl -fsS --max-time 1 http://localhost:3010/ >/dev/null 2>&1; then
   exit 1
 fi
 
-print "[1/6] Building optimized Vinext assets with Bun…"
+print "[1/7] Building the bundled Claude Desktop extension…"
+/bin/zsh "$ROOT/scripts/build-dxt.sh"
+
+print "[2/7] Building optimized Vinext assets with Bun…"
 cd "$ROOT"
 WRANGLER_LOG_PATH=.wrangler/wrangler.log "$BUN" "$ROOT/node_modules/vinext/dist/cli.js" build
 
@@ -33,20 +38,22 @@ esac
 rm -rf "$APP" "$ICONSET"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$ICONSET"
 
-print "[2/6] Compiling the standalone Bun server…"
+print "[3/7] Compiling the standalone Bun server…"
 "$BUN" build "$ROOT/scripts/packaged-server.ts" --compile --target=bun-darwin-arm64 --minify --sourcemap --outfile "$APP/Contents/MacOS/VidmarkServer"
 
-print "[3/6] Compiling the native Swift + WKWebView shell…"
+print "[4/7] Compiling the native Swift + WKWebView shell…"
 /usr/bin/xcrun swiftc "$ROOT/packaging/VidmarkApp.swift" -O -target arm64-apple-macos13.0 -framework AppKit -framework WebKit -o "$APP/Contents/MacOS/Vidmark"
 
-print "[4/6] Packaging production assets and local transcription support…"
+print "[5/7] Packaging production assets, the Claude extension, and local transcription support…"
 /usr/bin/ditto "$ROOT/dist" "$APP/Contents/Resources/dist"
+/bin/mkdir -p "$APP/Contents/Resources/ClaudeDesktop"
+/usr/bin/ditto "$MCPB" "$APP/Contents/Resources/ClaudeDesktop/Vidmark.mcpb"
 /bin/cp "$ROOT/scripts/whisper-worker.py" "$APP/Contents/Resources/whisper-worker.py"
 /bin/cp "$ROOT/packaging/Info.plist" "$APP/Contents/Info.plist"
 print -r -- "$ROOT" > "$APP/Contents/Resources/vidmark-project-path"
 /bin/chmod +x "$APP/Contents/MacOS/Vidmark" "$APP/Contents/MacOS/VidmarkServer"
 
-print "[5/6] Creating the macOS icon…"
+print "[6/7] Creating the macOS icon…"
 for size in 16 32 128 256 512; do
   /usr/bin/sips -z "$size" "$size" "$ICON_SOURCE" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
   double=$((size * 2))
@@ -55,7 +62,7 @@ done
 /usr/bin/iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Vidmark.icns"
 rm -rf "$ICONSET"
 
-print "[6/6] Ad-hoc signing the local app bundle…"
+print "[7/7] Ad-hoc signing the local app bundle…"
 /usr/bin/codesign --force --deep --sign - "$APP"
 
 print ""

@@ -1,7 +1,9 @@
 "use client";
 
-import { Bot, CheckCircle2, Copy, KeyRound, LoaderCircle, Server, Settings2, Sparkles, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Bot, CheckCircle2, Copy, KeyRound, LoaderCircle, RotateCcw, Server, Settings2, SlidersHorizontal, Sparkles, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import type { SystemPromptId, SystemPromptOverrides, SystemPromptSetting } from "./system-prompts";
+import { getSystemPrompts, saveSystemPrompts } from "./vidmark-client";
 
 const PROVIDER_URL = "http://127.0.0.1:31418";
 
@@ -24,7 +26,37 @@ const responseJson = async <T,>(response: Response): Promise<T> => {
   return payload;
 };
 
-export function AgentProviderDialog({ open, initialView, courseId, courseTitle, transcriptCues, onClose, onCopyHandoff }: {
+function SystemPromptEditor({ prompts, drafts, busy, status, onChange, onReset, onResetAll, onSave }: {
+  prompts: SystemPromptSetting[];
+  drafts: SystemPromptOverrides;
+  busy: boolean;
+  status: string;
+  onChange: (id: SystemPromptId, value: string) => void;
+  onReset: (prompt: SystemPromptSetting) => void;
+  onResetAll: () => void;
+  onSave: () => void;
+}) {
+  const hasBlankPrompt = prompts.some((prompt) => !(drafts[prompt.id] ?? "").trim());
+  return <div className="system-prompts-view">
+    <div className="system-prompts-intro"><SlidersHorizontal aria-hidden="true" /><div><h3>Local system prompt overrides</h3><p>These instructions affect only this Vidmark installation. They are not included in courses, shared with other users, or published to the global course.</p></div></div>
+    <div className="system-prompt-list">
+      {prompts.map((prompt, index) => {
+        const value = drafts[prompt.id] ?? prompt.effectiveValue;
+        const changed = value.trim() !== prompt.defaultValue.trim();
+        return <details key={prompt.id} open={index === 0} className="system-prompt-card">
+          <summary><span><b>{prompt.title}</b><small>{prompt.description}</small></span><em className={changed ? "overridden" : "default"}>{changed ? "Local override" : "Default"}</em></summary>
+          <div className="system-prompt-editor">
+            <textarea aria-label={`${prompt.title} prompt`} value={value} onChange={(event) => onChange(prompt.id, event.target.value)} spellCheck="false" />
+            <div><small>{prompt.variables.length ? `Available template variables: ${prompt.variables.map((name) => `{{${name}}}`).join(", ")}` : "No template variables."}</small><button type="button" onClick={() => onReset(prompt)} disabled={!changed || busy}><RotateCcw aria-hidden="true" /> Reset prompt</button></div>
+          </div>
+        </details>;
+      })}
+    </div>
+    <footer className="agent-provider-actions system-prompt-actions"><span role="status">{status}</span><div><button type="button" className="secondary" onClick={onResetAll} disabled={busy}><RotateCcw aria-hidden="true" /> Reset all</button><button type="button" onClick={onSave} disabled={busy || hasBlankPrompt}>{busy ? <LoaderCircle className="spin" aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />} Save local overrides</button></div></footer>
+  </div>;
+}
+
+export function AgentProviderDialog({ open, initialView, courseId, courseTitle, transcriptCues, onClose, onCopyHandoff, onBuildComplete }: {
   open: boolean;
   initialView: "build" | "settings";
   courseId: string;
@@ -32,31 +64,46 @@ export function AgentProviderDialog({ open, initialView, courseId, courseTitle, 
   transcriptCues: number;
   onClose: () => void;
   onCopyHandoff: () => Promise<void>;
+  onBuildComplete: () => Promise<void>;
 }) {
-  const [view, setView] = useState(initialView);
+  const [view, setView] = useState<"build" | "settings" | "prompts">(initialView);
   const [settings, setSettings] = useState(initialSettings);
   const [apiKey, setApiKey] = useState("");
   const [models, setModels] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [job, setJob] = useState<BuildJob | null>(null);
+  const [prompts, setPrompts] = useState<SystemPromptSetting[]>([]);
+  const [promptDrafts, setPromptDrafts] = useState<SystemPromptOverrides>({});
+  const [promptBusy, setPromptBusy] = useState(false);
+  const [promptStatus, setPromptStatus] = useState("");
+  const completedJobs = useRef(new Set<string>());
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     const load = async () => {
-      try {
-        const loaded = await responseJson<ProviderSettings>(await fetch(`${PROVIDER_URL}/settings`));
-        if (cancelled) return;
+      const [providerResult, promptResult] = await Promise.allSettled([
+        fetch(`${PROVIDER_URL}/settings`).then((response) => responseJson<ProviderSettings>(response)),
+        getSystemPrompts(),
+      ]);
+      if (cancelled) return;
+      if (providerResult.status === "fulfilled") {
+        const loaded = providerResult.value;
         setSettings(loaded);
         setStatus(loaded.configured ? "" : "Choose a model connection before starting a build.");
         if (loaded.provider === "local" || loaded.configured) {
-          const result = await responseJson<{ models: string[] }>(await fetch(`${PROVIDER_URL}/models`));
-          if (!cancelled) setModels(result.models);
+          try {
+            const result = await responseJson<{ models: string[] }>(await fetch(`${PROVIDER_URL}/models`));
+            if (!cancelled) setModels(result.models);
+          } catch (error) { if (!cancelled) setStatus(error instanceof Error ? error.message : "Models could not be loaded."); }
         }
-      } catch (error) {
-        if (!cancelled) setStatus(error instanceof Error ? error.message : "The local model service is unavailable.");
-      }
+      } else setStatus(providerResult.reason instanceof Error ? providerResult.reason.message : "The local model service is unavailable.");
+      if (promptResult.status === "fulfilled") {
+        setPrompts(promptResult.value.prompts);
+        setPromptDrafts(Object.fromEntries(promptResult.value.prompts.map((prompt) => [prompt.id, prompt.effectiveValue])) as SystemPromptOverrides);
+        setPromptStatus("");
+      } else setPromptStatus(promptResult.reason instanceof Error ? promptResult.reason.message : "System prompts could not be loaded.");
     };
     void load();
     return () => { cancelled = true; };
@@ -65,11 +112,19 @@ export function AgentProviderDialog({ open, initialView, courseId, courseTitle, 
   useEffect(() => {
     if (!job || (job.status !== "queued" && job.status !== "running")) return;
     const timer = window.setInterval(async () => {
-      try { setJob(await responseJson<BuildJob>(await fetch(`${PROVIDER_URL}/build/${job.id}`))); }
+      try {
+        const updated = await responseJson<BuildJob>(await fetch(`${PROVIDER_URL}/build/${job.id}`));
+        setJob(updated);
+        if (updated.status === "complete" && !completedJobs.current.has(updated.id)) {
+          completedJobs.current.add(updated.id);
+          await onBuildComplete();
+          setStatus("Course refreshed from SQLite and ready to study or share.");
+        }
+      }
       catch (error) { setStatus(error instanceof Error ? error.message : "Build status could not be refreshed."); }
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [job]);
+  }, [job, onBuildComplete]);
 
   if (!open) return null;
 
@@ -97,12 +152,34 @@ export function AgentProviderDialog({ open, initialView, courseId, courseTitle, 
     setModels([]); setApiKey(""); setStatus("");
   };
 
+  const savePromptOverrides = async () => {
+    setPromptBusy(true); setPromptStatus("Saving local overrides…");
+    try {
+      const overrides = Object.fromEntries(prompts.flatMap((prompt) => {
+        const value = promptDrafts[prompt.id]?.trim() ?? "";
+        return value && value !== prompt.defaultValue.trim() ? [[prompt.id, value]] : [];
+      })) as SystemPromptOverrides;
+      const saved = await saveSystemPrompts(overrides);
+      setPrompts(saved.prompts);
+      setPromptDrafts(Object.fromEntries(saved.prompts.map((prompt) => [prompt.id, prompt.effectiveValue])) as SystemPromptOverrides);
+      setPromptStatus("Saved on this Mac. New model and MCP runs use these prompts immediately.");
+    } catch (error) { setPromptStatus(error instanceof Error ? error.message : "System prompts could not be saved."); }
+    finally { setPromptBusy(false); }
+  };
+
+  const resetPrompt = (prompt: SystemPromptSetting) => setPromptDrafts((current) => ({ ...current, [prompt.id]: prompt.defaultValue }));
+  const resetAllPrompts = () => setPromptDrafts(Object.fromEntries(prompts.map((prompt) => [prompt.id, prompt.defaultValue])) as SystemPromptOverrides);
+  const copyClaudeSetup = async () => {
+    await navigator.clipboard.writeText("claude mcp add --transport http vidmark http://127.0.0.1:31417/mcp");
+    setStatus("Claude Code setup command copied. Run it while Vidmark is open, then copy the course task.");
+  };
+
   return <dialog open className="modal-backdrop agent-provider-backdrop" aria-label="Course build agent">
     <section className="agent-provider-modal">
-      <header className="agent-provider-head"><div><Bot aria-hidden="true" /><div><span>COURSE BUILD AGENT</span><h2>{view === "build" ? "Build with your model" : "Model connection"}</h2></div></div><button type="button" onClick={onClose} aria-label="Close agent settings"><X aria-hidden="true" /></button></header>
-      <nav className="agent-provider-tabs" aria-label="Agent configuration"><button className={view === "build" ? "active" : ""} onClick={() => setView("build")}>Build</button><button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>Model connection</button></nav>
+      <header className="agent-provider-head"><div><Bot aria-hidden="true" /><div><span>COURSE BUILD AGENT</span><h2>{view === "build" ? "Build with your model" : view === "settings" ? "Model connection" : "System prompts"}</h2></div></div><button type="button" onClick={onClose} aria-label="Close agent settings"><X aria-hidden="true" /></button></header>
+      <nav className="agent-provider-tabs" aria-label="Agent configuration"><button className={view === "build" ? "active" : ""} onClick={() => setView("build")}>Build</button><button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>Model connection</button><button className={view === "prompts" ? "active" : ""} onClick={() => setView("prompts")}>System prompts</button></nav>
 
-      {view === "settings" ? <div className="provider-settings-view">
+      {view === "prompts" ? <SystemPromptEditor prompts={prompts} drafts={promptDrafts} busy={promptBusy} status={promptStatus} onChange={(id, value) => setPromptDrafts((current) => ({ ...current, [id]: value }))} onReset={resetPrompt} onResetAll={resetAllPrompts} onSave={() => void savePromptOverrides()} /> : view === "settings" ? <div className="provider-settings-view">
         <div className="provider-choice" role="group" aria-label="Model provider">
           <button type="button" className={settings.provider === "local" ? "active" : ""} onClick={() => selectProvider("local")}><Server aria-hidden="true" /><span><b>Local or self-hosted</b><small>Ollama, LM Studio, or any OpenAI-compatible host</small></span></button>
           <button type="button" className={settings.provider === "openrouter" ? "active" : ""} onClick={() => selectProvider("openrouter")}><Sparkles aria-hidden="true" /><span><b>OpenRouter</b><small>Cloud models with optional grounded web search</small></span></button>
@@ -116,11 +193,11 @@ export function AgentProviderDialog({ open, initialView, courseId, courseTitle, 
         <footer className="agent-provider-actions"><span role="status">{status}</span><button type="button" disabled={busy || !settings.model.trim() || (settings.provider === "openrouter" && !apiKey.trim() && !settings.hasApiKey)} onClick={() => void saveAndTest()}>{busy ? <LoaderCircle className="spin" aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />} Save & test</button></footer>
       </div> : <div className="provider-build-view">
         <div className="build-target"><div><span>COURSE</span><h3>{courseTitle}</h3></div><div><span>MODEL</span><strong>{settings.configured ? settings.model : "Not configured"}</strong><small>{settings.provider === "openrouter" ? "OpenRouter" : settings.baseUrl}</small></div></div>
-        <div className="build-explainer"><h3>What “Build with agent” does</h3><ol><li><b>Loads both prompt layers.</b><span>Vidmark’s master instructions plus this course’s required prompt.</span></li><li><b>Reads the timestamped transcript.</b><span>The agent cannot invent or scrape captions when none have been imported.</span></li><li><b>Delegates specialist work.</b><span>Independent model contexts handle chapters, research, assessments, visuals, and QA.</span></li><li><b>Saves reviewed artifacts.</b><span>The study guide, research notes, chapters, and questions return to Vidmark.</span></li></ol></div>
-        <div className={`build-readiness ${transcriptCues ? "ready" : "blocked"}`}><span>{transcriptCues ? `${transcriptCues.toLocaleString()} transcript cues ready` : "Transcript required"}</span><p>{transcriptCues ? `Starting may make many model calls and can take a while.${settings.provider === "local" ? " Local models can fetch exact source URLs but do not receive OpenRouter web search." : " Grounded web search may add provider charges."}` : "Import a timestamped .VTT transcript before running the in-app agent."}</p></div>
+        <div className="build-explainer"><h3>What “Build with agent” does</h3><ol><li><b>Loads both prompt layers.</b><span>Vidmark’s master instructions plus this course’s required prompt.</span></li><li><b>Gets the timestamped transcript.</b><span>The agent reads imported cues or acquires an available public YouTube caption track.</span></li><li><b>Delegates specialist work.</b><span>Independent model contexts handle chapters, research, assessments, visuals, and QA.</span></li><li><b>Saves reviewed artifacts.</b><span>The study guide, research notes, chapters, and questions return to Vidmark.</span></li></ol></div>
+        <div className={`build-readiness ${transcriptCues ? "ready" : "acquire"}`}><span>{transcriptCues ? `${transcriptCues.toLocaleString()} transcript cues ready` : "Transcript will be acquired"}</span><p>{transcriptCues ? `Starting may make many model calls and can take a while.${settings.provider === "local" ? " Local models can fetch exact source URLs but do not receive OpenRouter web search." : " Grounded web search may add provider charges."}` : "The coordinator will retrieve and save an available public YouTube caption track before building. If the video has no accessible captions, the build will stop and ask for a transcript."}</p></div>
         {job && <div className={`build-job ${job.status}`}><div>{job.status === "running" || job.status === "queued" ? <LoaderCircle className="spin" aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}<span><b>{job.phase}</b><small>{job.message}</small></span></div></div>}
-        <div className="build-alternative"><span>Already use Claude Code, Codex, or another MCP client?</span><button type="button" onClick={() => void onCopyHandoff()}><Copy aria-hidden="true" /> Copy MCP handoff</button></div>
-        <footer className="agent-provider-actions"><button type="button" className="secondary" onClick={() => setView("settings")}><Settings2 aria-hidden="true" /> Configure model</button><button type="button" disabled={busy || !settings.configured || !transcriptCues || job?.status === "running" || job?.status === "queued"} onClick={() => void startBuild()}>{busy || job?.status === "running" || job?.status === "queued" ? <LoaderCircle className="spin" aria-hidden="true" /> : <Sparkles aria-hidden="true" />} Start course build</button></footer>
+        <div className="build-alternative"><span><b>Claude Code</b> · connect once, then give Claude this course task.</span><code>claude mcp add --transport http vidmark http://127.0.0.1:31417/mcp</code><div><button type="button" onClick={() => void copyClaudeSetup()}><Copy aria-hidden="true" /> Copy setup command</button><button type="button" onClick={() => void onCopyHandoff()}><Copy aria-hidden="true" /> Copy course task</button></div></div>
+        <footer className="agent-provider-actions"><button type="button" className="secondary" onClick={() => setView("settings")}><Settings2 aria-hidden="true" /> Configure model</button><button type="button" disabled={busy || !settings.configured || job?.status === "running" || job?.status === "queued"} onClick={() => void startBuild()}>{busy || job?.status === "running" || job?.status === "queued" ? <LoaderCircle className="spin" aria-hidden="true" /> : <Sparkles aria-hidden="true" />} Start course build</button></footer>
         {status && <p className="agent-provider-status" role="status">{status}</p>}
       </div>}
     </section>

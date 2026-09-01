@@ -1,0 +1,91 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
+  "manifest_version": "0.4",
+  "name": "vidmark",
+  "display_name": "Vidmark",
+  "version": "1.1.0",
+  "description": "Build, study, revise, and share local Vidmark courses from Claude Desktop.",
+  "long_description": "Vidmark is a local-first study application for YouTube courses. This extension connects Claude Desktop to the Vidmark app running on the same Mac. Claude can retrieve course-building prompts, read imported transcripts, coordinate course creation, edit questions and answers, manage concept graphs, and share complete courses through Vidmark's encrypted relay.\n\nVidmark must be installed and available on this Mac. The extension starts the app when necessary, then bridges Claude Desktop's local stdio MCP connection to Vidmark's loopback-only Streamable HTTP server. Course content and private state remain in Vidmark's local SQLite database.",
+  "author": {
+    "name": "Vidmark"
+  },
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/index.mjs"
+      ],
+      "env": {
+        "VIDMARK_MCP_URL": "http://127.0.0.1:31417/mcp",
+        "VIDMARK_APP_NAME": "Vidmark"
+      }
+    }
+  },
+  "tools": [
+    { "name": "list_courses" },
+    { "name": "get_course" },
+    { "name": "upsert_course" },
+    { "name": "save_course_build" },
+    { "name": "list_course_chapters" },
+    { "name": "get_course_concept_graph" },
+    { "name": "upsert_course_concept_graph" },
+    { "name": "list_course_questions" },
+    { "name": "get_course_question" },
+    { "name": "upsert_course_question" },
+    { "name": "patch_course_question" },
+    { "name": "archive_course_question" },
+    { "name": "create_question_suggestion" },
+    { "name": "list_question_suggestions" },
+    { "name": "review_question_suggestion" },
+    { "name": "get_transcript" },
+    { "name": "replace_transcript" },
+    { "name": "acquire_course_transcript" },
+    { "name": "list_notes" },
+    { "name": "get_profile" },
+    { "name": "upsert_profile" },
+    { "name": "get_sync_status" },
+    { "name": "search_vidmark_users" },
+    { "name": "share_question_suggestion_with_user" },
+    { "name": "share_course_question_with_user" },
+    { "name": "share_note_with_user" },
+    { "name": "share_course_with_user" },
+    { "name": "create_course_share_link" },
+    { "name": "import_course_share_link" },
+    { "name": "revoke_course_share_link" },
+    { "name": "list_inbox" },
+    { "name": "update_inbox_item" },
+    { "name": "review_course_invite" },
+    { "name": "get_global_course" },
+    { "name": "publish_course_version" },
+    { "name": "make_course_private" },
+    { "name": "import_global_course" },
+    { "name": "list_global_course_revisions" },
+    { "name": "review_global_course_revision" },
+    { "name": "list_course_comments" },
+    { "name": "post_course_comment" },
+    { "name": "get_sync_preferences" },
+    { "name": "update_sync_preferences" }
+  ],
+  "tools_generated": true,
+  "prompts_generated": true,
+  "keywords": [
+    "study",
+    "courses",
+    "youtube",
+    "questions",
+    "mcp"
+  ],
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": [
+      "darwin"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "privacy_policies": []
+}

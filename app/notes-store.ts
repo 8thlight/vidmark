@@ -9,6 +9,11 @@ export type StudyNote = {
   audio?: Blob;
   audioUrl?: string;
   durationSeconds?: number;
+  sharedFromPeer?: boolean;
+  readOnly?: boolean;
+  authorProfile?: { id: string; name: string; email: string; avatarStyle: string; avatarSeed: string };
+  authorDeviceId?: string;
+  originalSource?: string;
 };
 
 const databaseName = "vidmark-note-session";

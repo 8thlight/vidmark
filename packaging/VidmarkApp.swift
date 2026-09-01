@@ -1,32 +1,71 @@
 import AppKit
+import UserNotifications
 import WebKit
 
-final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate {
+private struct VidmarkDesktopNotification: Decodable {
+    let sequence: Int
+    let eventId: String
+    let kind: String
+    let title: String
+    let body: String
+    let target: String
+    let entityId: String
+}
+
+private struct VidmarkNotificationFeed: Decodable {
+    let installationId: String
+    let notifications: [VidmarkDesktopNotification]
+    let cursor: Int
+    let unreadCount: Int
+}
+
+final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, UNUserNotificationCenterDelegate {
     private let appURL = URL(string: "http://localhost:3010/")!
+    private let notificationsURL = URL(string: "http://127.0.0.1:31417/api/desktop-notifications")!
+    private let notificationCenter = UNUserNotificationCenter.current()
+    private let notificationCursorKey = "VidmarkDesktopNotificationCursor"
+    private let notificationInstallationKey = "VidmarkDesktopNotificationInstallation"
     private var window: NSWindow!
     private var webView: WKWebView!
     private var statusLabel: NSTextField!
     private var progress: NSProgressIndicator!
     private var retryButton: NSButton!
     private var readinessTimer: Timer?
+    private var notificationTimer: Timer?
     private var readinessAttempts = 0
+    private var notificationCursor = 0
+    private var notificationInstallationId = ""
+    private var notificationsConfigured = false
+    private var pendingNotificationTarget: (target: String, entityId: String)?
     private var serverProcess: Process?
     private var serverLog: FileHandle?
+    private var claudeExtensionURL: URL?
     private var isTerminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        notificationCursor = UserDefaults.standard.integer(forKey: notificationCursorKey)
+        notificationInstallationId = UserDefaults.standard.string(forKey: notificationInstallationKey) ?? ""
         buildMenu()
         buildWindow()
-        launchServer()
-        waitForServer()
         NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.launchServer()
+            self?.waitForServer()
+        }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { window.makeKeyAndOrderFront(nil) }
+        return true
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
         readinessTimer?.invalidate()
+        notificationTimer?.invalidate()
+        NSApp.dockTile.badgeLabel = nil
         stopServer()
     }
 
@@ -36,6 +75,8 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Vidmark", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Reveal Claude Desktop Extension…", action: #selector(revealClaudeExtension), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Notification Settings…", action: #selector(openNotificationSettings), keyEquivalent: "")
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit Vidmark", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
@@ -52,6 +93,62 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu
         NSApp.mainMenu = mainMenu
+    }
+
+    private func configureNotifications() {
+        guard !notificationsConfigured else { return }
+        notificationsConfigured = true
+        notificationCenter.delegate = self
+        let openAction = UNNotificationAction(identifier: "OPEN_VIDMARK", title: "Open in Vidmark", options: [.foreground])
+        let category = UNNotificationCategory(identifier: "VIDMARK_COLLABORATION", actions: [openAction], intentIdentifiers: [], options: [])
+        notificationCenter.setNotificationCategories([category])
+        notificationCenter.requestAuthorization(options: [.alert, .sound, .badge]) { _, error in
+            if let error { NSLog("Vidmark notification permission error: \(error.localizedDescription)") }
+        }
+    }
+
+    @objc private func openNotificationSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func installBundledClaudeExtension() {
+        guard let source = Bundle.main.resourceURL?.appendingPathComponent("ClaudeDesktop/Vidmark.mcpb"),
+              FileManager.default.fileExists(atPath: source.path) else {
+            NSLog("Vidmark Claude Desktop extension is missing from the app bundle.")
+            return
+        }
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Vidmark/Claude Desktop", isDirectory: true)
+        let destination = directory.appendingPathComponent("Vidmark.mcpb")
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: destination.path),
+               FileManager.default.contentsEqual(atPath: source.path, andPath: destination.path) {
+                claudeExtensionURL = destination
+                return
+            }
+            let temporary = directory.appendingPathComponent("Vidmark.mcpb.next")
+            try? FileManager.default.removeItem(at: temporary)
+            try FileManager.default.copyItem(at: source, to: temporary)
+            if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
+            try FileManager.default.moveItem(at: temporary, to: destination)
+            claudeExtensionURL = destination
+        } catch {
+            NSLog("Vidmark could not copy the Claude Desktop extension: \(error.localizedDescription)")
+        }
+    }
+
+    @objc private func revealClaudeExtension() {
+        if claudeExtensionURL == nil { installBundledClaudeExtension() }
+        guard let claudeExtensionURL else {
+            let alert = NSAlert()
+            alert.messageText = "Claude Desktop extension unavailable"
+            alert.informativeText = "Vidmark could not copy its bundled .mcpb file. Reinstall Vidmark and try again."
+            alert.runModal()
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([claudeExtensionURL])
     }
 
     private func buildWindow() {
@@ -170,6 +267,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
                     timer.invalidate()
                     self.statusLabel.stringValue = "Loading workspace…"
                     self.webView.load(URLRequest(url: self.appURL))
+                    self.startNotificationPolling()
                 }
             }.resume()
         }
@@ -192,6 +290,73 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         retryButton.isHidden = false
     }
 
+    private func startNotificationPolling() {
+        guard notificationTimer == nil else { return }
+        pollDesktopNotifications()
+        let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.pollDesktopNotifications() }
+        RunLoop.main.add(timer, forMode: .common)
+        notificationTimer = timer
+    }
+
+    private func pollDesktopNotifications() {
+        var components = URLComponents(url: notificationsURL, resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "after", value: String(notificationCursor)), URLQueryItem(name: "limit", value: "50")]
+        guard let url = components.url else { return }
+        let requestedCursor = notificationCursor
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 2
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+            guard let self, let data, let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let feed = try? JSONDecoder().decode(VidmarkNotificationFeed.self, from: data) else { return }
+            DispatchQueue.main.async { self.handleNotificationFeed(feed, requestedCursor: requestedCursor) }
+        }.resume()
+    }
+
+    private func handleNotificationFeed(_ feed: VidmarkNotificationFeed, requestedCursor: Int) {
+        if notificationInstallationId != feed.installationId {
+            notificationInstallationId = feed.installationId
+            notificationCursor = 0
+            UserDefaults.standard.set(feed.installationId, forKey: notificationInstallationKey)
+            UserDefaults.standard.set(0, forKey: notificationCursorKey)
+            if requestedCursor > 0 { pollDesktopNotifications(); return }
+        }
+
+        let shouldShowBanner = !(NSApp.isActive && window.isKeyWindow)
+        for item in feed.notifications {
+            if shouldShowBanner { scheduleDesktopNotification(item) }
+            notificationCursor = max(notificationCursor, item.sequence)
+        }
+        notificationCursor = max(notificationCursor, feed.cursor)
+        UserDefaults.standard.set(notificationCursor, forKey: notificationCursorKey)
+        NSApp.dockTile.badgeLabel = feed.unreadCount > 0 ? String(feed.unreadCount) : nil
+    }
+
+    private func scheduleDesktopNotification(_ item: VidmarkDesktopNotification) {
+        let content = UNMutableNotificationContent()
+        content.title = item.title
+        content.body = item.body
+        content.sound = .default
+        content.categoryIdentifier = "VIDMARK_COLLABORATION"
+        content.threadIdentifier = item.kind
+        content.userInfo = ["target": item.target, "entityId": item.entityId]
+        notificationCenter.add(UNNotificationRequest(identifier: item.eventId, content: content, trigger: nil))
+    }
+
+    private func openNotificationTarget(target: String, entityId: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        pendingNotificationTarget = (target, entityId)
+        dispatchPendingNotificationTarget()
+    }
+
+    private func dispatchPendingNotificationTarget() {
+        guard let pendingNotificationTarget, !webView.isLoading, webView.url != nil else { return }
+        let payload: [String: String] = ["target": pendingNotificationTarget.target, "entityId": pendingNotificationTarget.entityId]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload), let json = String(data: data, encoding: .utf8) else { return }
+        self.pendingNotificationTarget = nil
+        webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('vidmark:native-notification', { detail: \(json) }));")
+    }
+
     private func stopServer() {
         guard let process = serverProcess, process.isRunning else { return }
         process.terminate()
@@ -201,9 +366,14 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        installBundledClaudeExtension()
         webView.isHidden = false
         progress.superview?.isHidden = true
         window.title = webView.title ?? "Vidmark"
+        configureNotifications()
+        if pendingNotificationTarget != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.dispatchPendingNotificationTarget() }
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -229,6 +399,18 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     @available(macOS 12.0, *)
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
         decisionHandler(type == .microphone ? .grant : .prompt)
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler(NSApp.isActive && window.isKeyWindow ? [] : [.banner, .list, .sound])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        let info = response.notification.request.content.userInfo
+        let target = info["target"] as? String ?? "inbox"
+        let entityId = info["entityId"] as? String ?? ""
+        DispatchQueue.main.async { [weak self] in self?.openNotificationTarget(target: target, entityId: entityId) }
+        completionHandler()
     }
 }
 

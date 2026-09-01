@@ -1,7 +1,11 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { lookup } from "node:dns/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { composeCourseBuildPrompt } from "../app/course-prompts";
+import { getSystemPrompt, renderSystemPrompt } from "../app/system-prompts";
+import { readSystemPromptOverrides } from "./system-prompt-store";
+import { acquireYouTubeTranscript } from "./transcript-acquisition";
+import { VidmarkDatabase } from "./vidmark-db";
 
 const PROVIDER_PORT = 31418;
 const KEYCHAIN_SERVICE = "com.vidmark.model-provider";
@@ -15,18 +19,6 @@ type ProviderSettings = {
   enableWebSearch: boolean;
   updatedAt: number;
 };
-type CourseRecord = {
-  id: string;
-  title: string;
-  originPrompt: string;
-  promptCredit: string;
-  transcript: Array<{ time: number; text: string }>;
-  studyGuide?: string;
-  researchNotes?: string;
-  chapters?: unknown[];
-  questions?: unknown[];
-};
-type McpState = { courses: CourseRecord[]; updatedAt: number };
 type ChatMessage = { role: "system" | "user" | "assistant" | "tool"; content: string | null; tool_call_id?: string; tool_calls?: ToolCall[] };
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
 type BuildJob = { id: string; courseId: string; status: "queued" | "running" | "complete" | "failed"; phase: string; message: string; startedAt: number; updatedAt: number; error?: string };
@@ -115,9 +107,10 @@ const updateJob = (job: BuildJob, phase: string, message: string) => {
 const localTools = [
   { type: "function", function: { name: "get_course", description: "Read the selected course metadata and existing generated artifacts.", parameters: { type: "object", properties: {}, additionalProperties: false } } },
   { type: "function", function: { name: "get_transcript", description: "Read timestamped transcript cues in bounded pages.", parameters: { type: "object", properties: { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 500 } }, required: ["offset", "limit"], additionalProperties: false } } },
+  { type: "function", function: { name: "acquire_course_transcript", description: "Retrieve the selected course video's public YouTube caption track, preserve timestamps, and save it locally. Call this when get_transcript reports zero cues.", parameters: { type: "object", properties: { preferredLanguage: { type: "string", description: "Preferred BCP 47 language code, such as en or es." } }, additionalProperties: false } } },
   { type: "function", function: { name: "fetch_url", description: "Fetch an authoritative HTTP(S) documentation page for verification. Supply the exact primary-source URL.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false } } },
   { type: "function", function: { name: "run_subagent", description: "Run an isolated specialist model context for bounded research, chapter, assessment, visual-reference, or QA work.", parameters: { type: "object", properties: { role: { type: "string" }, task: { type: "string" }, context: { type: "string" } }, required: ["role", "task", "context"], additionalProperties: false } } },
-  { type: "function", function: { name: "save_course_build", description: "Save reviewed course artifacts. chapters and questions must be arrays.", parameters: { type: "object", properties: { studyGuide: { type: "string" }, researchNotes: { type: "string" }, chapters: { type: "array", items: { type: "object" } }, questions: { type: "array", items: { type: "object" } } }, required: ["studyGuide", "researchNotes", "chapters", "questions"], additionalProperties: false } } },
+  { type: "function", function: { name: "save_course_build", description: "Save reviewed course artifacts to Vidmark's SQLite database. chapters and questions must be non-empty arrays; conceptGraph must contain nodes and edges.", parameters: { type: "object", properties: { studyGuide: { type: "string" }, researchNotes: { type: "string" }, chapters: { type: "array", items: { type: "object" } }, questions: { type: "array", items: { type: "object" } }, conceptGraph: { type: "object", properties: { schemaVersion: { type: "string" }, nodes: { type: "array", items: { type: "object" } }, edges: { type: "array", items: { type: "object" } } }, required: ["nodes", "edges"], additionalProperties: true } }, required: ["studyGuide", "researchNotes", "chapters", "questions", "conceptGraph"], additionalProperties: false } } },
 ];
 
 const isPrivateAddress = (address: string) => {
@@ -155,15 +148,15 @@ const safeFetchUrl = async (rawUrl: string) => {
   return (await response.text()).replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 30_000);
 };
 
-const runBuild = async (job: BuildJob, settings: ProviderSettings, mcpStatePath: string) => {
+const runBuild = async (job: BuildJob, settings: ProviderSettings, databasePath: string, systemPromptsPath: string) => {
+  const store = new VidmarkDatabase(databasePath);
   try {
-    const state = await readJson<McpState>(mcpStatePath, { courses: [], updatedAt: Date.now() });
-    const course = state.courses.find((item) => item.id === job.courseId);
+    const storedPrompts = await readSystemPromptOverrides(systemPromptsPath);
+    const promptOverrides = storedPrompts.overrides;
+    const course = store.getCourse(job.courseId);
     if (!course) throw new Error("The selected course is not available to the local agent.");
-    if (!course.transcript?.length) throw new Error("Import a timestamped transcript before starting an in-app build.");
-
-    updateJob(job, "Starting coordinator", `Running ${settings.model} with the master and course-specific prompts.`);
-    const messages: ChatMessage[] = [{ role: "user", content: `${composeCourseBuildPrompt(course.title, course.id, course.originPrompt, course.promptCredit)}\n\nYou are running inside Vidmark. Use the supplied tools to inspect the transcript, delegate bounded work, verify sources, and save the completed course. Do not stop at a plan: call save_course_build after independent QA.` }];
+    updateJob(job, "Starting coordinator", `Running ${settings.model} with the master and course-specific prompts.${course.transcript?.length ? "" : " The coordinator will acquire public captions before building."}`);
+    const messages: ChatMessage[] = [{ role: "user", content: `${composeCourseBuildPrompt(String(course.title), String(course.id), String(course.coursePrompt), String(course.promptCredit), getSystemPrompt("courseBuilderMaster", promptOverrides))}\n\n${getSystemPrompt("coordinatorRuntime", promptOverrides)}` }];
     const tools: unknown[] = [...localTools, ...(settings.provider === "openrouter" && settings.enableWebSearch ? [{ type: "openrouter:web_search", max_total_results: 10, search_context_size: "high" }] : [])];
     let saved = false;
 
@@ -173,7 +166,7 @@ const runBuild = async (job: BuildJob, settings: ProviderSettings, mcpStatePath:
       messages.push(assistant);
       const calls = assistant.tool_calls ?? [];
       if (!calls.length) {
-        if (assistant.content?.trim()) messages.push({ role: "user", content: "Continue the build. Use the available tools and call save_course_build only after the artifacts pass QA." });
+        if (assistant.content?.trim()) messages.push({ role: "user", content: getSystemPrompt("coordinatorContinue", promptOverrides) });
         continue;
       }
 
@@ -186,22 +179,30 @@ const runBuild = async (job: BuildJob, settings: ProviderSettings, mcpStatePath:
           const offset = Math.max(0, Number(args.offset ?? 0));
           const limit = Math.min(500, Math.max(1, Number(args.limit ?? 250)));
           result = { offset, total: course.transcript.length, cues: course.transcript.slice(offset, offset + limit) };
+        } else if (call.function.name === "acquire_course_transcript") {
+          updateJob(job, "Acquiring transcript", "Retrieving the video's public timestamped YouTube captions.");
+          const acquired = await acquireYouTubeTranscript(String(course.videoUrl ?? course.videoId ?? course.id), String(args.preferredLanguage ?? "en"));
+          store.replaceTranscript(String(course.id), acquired.cues);
+          course.transcript = acquired.cues;
+          result = { saved: true, cues: acquired.cues.length, videoId: acquired.videoId, language: acquired.language, trackName: acquired.trackName, automaticallyGenerated: acquired.automaticallyGenerated, sourceUrl: acquired.sourceUrl, acquiredAt: acquired.acquiredAt };
         } else if (call.function.name === "fetch_url") {
           updateJob(job, "Verifying source", String(args.url ?? "Authoritative documentation"));
           result = { url: args.url, content: await safeFetchUrl(String(args.url ?? "")), accessedAt: new Date().toISOString() };
         } else if (call.function.name === "run_subagent") {
           updateJob(job, `Specialist · ${String(args.role ?? "course work")}`, String(args.task ?? "Working in an isolated context."));
-          const specialist = await callModel(settings, [{ role: "system", content: `You are the ${String(args.role)} specialist in a Vidmark course build. Work only on the bounded task. Return evidence-rich work for the coordinator; never claim actions you did not perform.` }, { role: "user", content: `${String(args.task)}\n\nContext:\n${String(args.context).slice(0, 80_000)}` }], settings.provider === "openrouter" && settings.enableWebSearch ? [{ type: "openrouter:web_search", max_total_results: 8, search_context_size: "high" }] : undefined, 8192);
+          const specialist = await callModel(settings, [{ role: "system", content: renderSystemPrompt("specialist", promptOverrides, { role: String(args.role) }) }, { role: "user", content: `${String(args.task)}\n\nContext:\n${String(args.context).slice(0, 80_000)}` }], settings.provider === "openrouter" && settings.enableWebSearch ? [{ type: "openrouter:web_search", max_total_results: 8, search_context_size: "high" }] : undefined, 8192);
           result = specialist.content ?? "The specialist returned no text.";
         } else if (call.function.name === "save_course_build") {
           const chapters = Array.isArray(args.chapters) ? args.chapters : [];
           const questions = Array.isArray(args.questions) ? args.questions : [];
+          const conceptGraph = args.conceptGraph && typeof args.conceptGraph === "object" && !Array.isArray(args.conceptGraph) ? args.conceptGraph : null;
           if (!chapters.length || !questions.length) throw new Error("The agent tried to save an empty chapter or question collection.");
-          const latest = await readJson<McpState>(mcpStatePath, state);
-          latest.courses = latest.courses.map((item) => item.id === course.id ? { ...item, studyGuide: String(args.studyGuide ?? ""), researchNotes: String(args.researchNotes ?? ""), chapters, questions } : item);
-          latest.updatedAt = Date.now();
-          await writeJson(mcpStatePath, latest);
-          result = { saved: true, chapters: chapters.length, questions: questions.length };
+          if (!conceptGraph) throw new Error("The agent tried to save a course without its concept graph.");
+          store.upsertCourse({ id: String(course.id), title: String(course.title), source: String(course.source), videoUrl: String(course.videoUrl), originPrompt: String(course.coursePrompt), promptCredit: String(course.promptCredit), studyGuide: String(args.studyGuide ?? ""), researchNotes: String(args.researchNotes ?? "") });
+          store.replaceChapters(String(course.id), chapters);
+          store.replaceQuestions(String(course.id), questions);
+          store.saveConceptGraph(String(course.id), conceptGraph);
+          result = { saved: true, database: databasePath, chapters: chapters.length, questions: questions.length, conceptGraph: store.getConceptGraph(String(course.id))?.revision };
           saved = true;
         } else {
           result = { error: `Unknown tool ${call.function.name}.` };
@@ -215,10 +216,12 @@ const runBuild = async (job: BuildJob, settings: ProviderSettings, mcpStatePath:
   } catch (error) {
     const message = error instanceof Error ? error.message : "The course build failed.";
     Object.assign(job, { status: "failed" as const, phase: "Build stopped", message, error: message, updatedAt: Date.now() });
+  } finally {
+    store.close();
   }
 };
 
-export function startModelProviderServer(settingsPath: string, mcpStatePath: string) {
+export function startModelProviderServer(settingsPath: string, databasePath: string, systemPromptsPath = join(dirname(settingsPath), "system-prompts.json")) {
   const corsHeaders = (request: Request) => {
     const origin = request.headers.get("origin");
     const allowed = origin === "http://127.0.0.1:3010" ? origin : "http://localhost:3010";
@@ -255,7 +258,8 @@ export function startModelProviderServer(settingsPath: string, mcpStatePath: str
         if (request.method === "POST" && url.pathname === "/test") {
           if (!settings.configured) throw new Error("Save provider settings before testing the connection.");
           const probe = [{ type: "function", function: { name: "confirm_vidmark_connection", description: "Confirm that this model can participate in Vidmark's agent tool loop.", parameters: { type: "object", properties: { ready: { type: "boolean" } }, required: ["ready"], additionalProperties: false } } }];
-          const message = await callModel(settings, [{ role: "user", content: "Call confirm_vidmark_connection with ready=true. Do not answer in prose." }], probe, 512, "required");
+          const storedPrompts = await readSystemPromptOverrides(systemPromptsPath);
+          const message = await callModel(settings, [{ role: "user", content: getSystemPrompt("connectionProbe", storedPrompts.overrides) }], probe, 512, "required");
           if (!message.tool_calls?.some((call) => call.function.name === "confirm_vidmark_connection")) throw new Error("The host responded, but this model did not complete the required tool-call test. Choose a tool-capable model for course builds.");
           return Response.json({ ok: true, model: settings.model, response: "Connection ready · tool calling verified" }, { headers });
         }
@@ -265,7 +269,7 @@ export function startModelProviderServer(settingsPath: string, mcpStatePath: str
           if (!courseId) throw new Error("Choose a course before starting a build.");
           const job: BuildJob = { id: crypto.randomUUID(), courseId, status: "queued", phase: "Queued", message: "Preparing the course coordinator.", startedAt: Date.now(), updatedAt: Date.now() };
           buildJobs.set(job.id, job);
-          void runBuild(job, settings, mcpStatePath);
+          void runBuild(job, settings, databasePath, systemPromptsPath);
           return Response.json(job, { status: 202, headers });
         }
         if (request.method === "GET" && url.pathname.startsWith("/build/")) {

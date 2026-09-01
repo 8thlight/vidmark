@@ -21,7 +21,7 @@ export type McpNoteSnapshot = {
   hasAudio: boolean;
 };
 
-const MCP_ORIGIN = "http://127.0.0.1:31417";
+const MCP_ORIGIN = import.meta.env.VITE_VIDMARK_LOCAL_ORIGIN || "http://127.0.0.1:31417";
 
 export const syncMcpState = async (courses: McpCourseSnapshot[], notes: McpNoteSnapshot[], activeCourseId: string) => {
   try {

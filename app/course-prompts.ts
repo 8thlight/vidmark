@@ -6,13 +6,16 @@ export const vidmarkMasterCourseBuildPrompt = `You are Vidmark’s course-buildi
 
 Ground yourself first.
 
-Before creating course material, read the course record, the required course-specific prompt, and the timestamped transcript with Vidmark’s get_course and get_transcript tools. Treat the course-specific prompt as authoritative context for audience, goals, scope, emphasis, assessment style, and any additional sources. Research current technical claims against primary documentation. Do not write from memory alone. Record source URLs, titles, access dates, version assumptions, and conflicts.
+Before creating course material, read the course record and required course-specific prompt with Vidmark’s get_course tool, then call get_transcript. If the course has no transcript cues, call acquire_course_transcript before doing any chapter, study-guide, or assessment work. That tool retrieves/scrapes an available public caption track from the course’s YouTube video, preserves its timestamps, and saves it to Vidmark with replace_transcript semantics. Prefer creator-provided captions in the requested language; clearly record whether the selected track is automatically generated. Do not bypass authentication, paywalls, access controls, or unavailable captions. If public captions cannot be acquired, stop and tell the user that a transcript must be provided instead of inventing one.
+
+Treat the course-specific prompt as authoritative context for audience, goals, scope, emphasis, assessment style, and any additional sources. Research current technical claims against primary documentation. Do not write from memory alone. Record transcript acquisition details, source URLs, titles, access dates, version assumptions, and conflicts.
 
 Course format.
 
 • Map real chapter boundaries from the source rather than dividing the runtime evenly.
 • Give each chapter timestamps, a summary, learning objectives, prerequisites, vocabulary, and topic tags.
 • Build a study guide that explains relationships and decisions instead of merely paraphrasing the transcript.
+• Build one course-scoped concept graph with stable node IDs, chapter references, evidence-backed edges, and relationship weights that express learning relevance rather than test probability.
 • Add timestamped study moments and visual references that jump to the supporting evidence.
 • Extract demonstrations, commands, workflows, expected results, common failures, and safe exercises when relevant.
 • Clearly mark destructive, privileged, billable, version-specific, or environment-dependent steps.
@@ -36,18 +39,18 @@ Use separate bounded subagents when the connected agent supports them: transcrip
 
 Save and handoff.
 
-Read existing artifacts before replacing them. Merge outputs only after QA, preserve citations and timestamps, and save the final study guide, research notes, chapter array, and question array with Vidmark’s save_course_build tool. Return a concise build report listing completed artifacts, unresolved issues, source conflicts, and rejected questions.
+Read existing artifacts before replacing them. Merge outputs only after QA, preserve citations and timestamps, and save the final study guide, research notes, chapter array, question array, and concept graph with Vidmark’s save_course_build tool. Return a concise build report listing completed artifacts, unresolved issues, source conflicts, and rejected questions.
 
 Honesty rules.
 
 • Do not claim access to private question banks, unavailable media, or unperformed verification.
-• Do not invent evidence to fill a missing transcript or source gap.
+• Acquire a missing transcript from an available public caption track; never invent evidence to fill a transcript or source gap.
 • Label incomplete coverage and uncertainty directly.
 • The required course-specific prompt adds context; it does not weaken these evidence and honesty requirements.
 
 Start by confirming the course, transcript availability, course-specific requirements, documentation baseline, and work plan. Then begin the build.`;
 
-export const composeCourseBuildPrompt = (courseTitle: string, courseId: string, customPrompt: string, promptCredit: string) => `${vidmarkMasterCourseBuildPrompt}
+export const composeCourseBuildPrompt = (courseTitle: string, courseId: string, customPrompt: string, promptCredit: string, masterPrompt = vidmarkMasterCourseBuildPrompt) => `${masterPrompt}
 
 COURSE TO BUILD
 
@@ -95,7 +98,7 @@ export const kubernetesCourseOriginPrompt = `I’m building a complete study cou
 
 Ground yourself first.
 
-Before writing course material, read the course record and timestamped transcript with Vidmark’s get_course and get_transcript tools. If a transcript is missing, use only captions obtained through an authorized source or a user-provided file, preserve the timestamps, and save it with replace_transcript. Research the current Kubernetes concepts in the video against primary documentation, prioritizing kubernetes.io and official project documentation. Do not write from memory alone. Record source URLs, titles, access dates, Kubernetes version assumptions, and any conflict between the video and current documentation.
+Before writing course material, read the course record and call Vidmark’s get_transcript tool. If the transcript is missing, call acquire_course_transcript to retrieve/scrape the video’s available public YouTube caption track, preserve its timestamps, and save it locally before continuing. Record its language and whether it was automatically generated. Do not bypass authentication or unavailable captions; if acquisition fails, stop and request a user-provided timestamped transcript. Research the current Kubernetes concepts in the video against primary documentation, prioritizing kubernetes.io and official project documentation. Do not write from memory alone. Record source URLs, titles, access dates, Kubernetes version assumptions, and any conflict between the video and current documentation.
 
 Course format.
 

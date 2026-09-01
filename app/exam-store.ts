@@ -79,10 +79,10 @@ const shuffle = <T,>(values: T[], random: () => number) => {
   return copy;
 };
 
-export const createExamQuestionIds = (seed = Date.now()) => {
+export const createExamQuestionIds = (seed = Date.now(), bank: ExamQuestion[] = examBank) => {
   const random = seededRandom(seed);
   const selected = (Object.entries(domainCounts) as [DomainId, number][]).flatMap(([domain, count]) => {
-    const pool = examBank.filter((question) => question.domain === domain);
+    const pool = bank.filter((question) => question.domain === domain);
     const byDifficulty = {
       foundational: shuffle(pool.filter((question) => question.difficulty === "foundational"), random),
       standard: shuffle(pool.filter((question) => question.difficulty === "standard"), random),
@@ -102,8 +102,8 @@ export const createExamQuestionIds = (seed = Date.now()) => {
   return shuffle(selected, random).map((question) => question.id);
 };
 
-export const examQuestionsFromIds = (ids: number[]): ExamQuestion[] =>
-  ids.map((id) => examBank.find((question) => question.id === id)).filter((question): question is ExamQuestion => Boolean(question));
+export const examQuestionsFromIds = (ids: number[], bank: ExamQuestion[] = examBank): ExamQuestion[] =>
+  ids.map((id) => bank.find((question) => question.id === id)).filter((question): question is ExamQuestion => Boolean(question));
 
 export const readActiveExam = (): ActiveExam | null => {
   try {

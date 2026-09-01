@@ -1,0 +1,13 @@
+FROM docker.io/oven/bun:1-alpine
+
+WORKDIR /app
+COPY server.ts ./server.ts
+RUN mkdir -p /data && chown -R bun:bun /app /data
+
+ENV PORT=31800
+ENV DATA_PATH=/data/relay.sqlite
+EXPOSE 31800
+VOLUME ["/data"]
+
+USER bun
+CMD ["bun", "run", "server.ts"]

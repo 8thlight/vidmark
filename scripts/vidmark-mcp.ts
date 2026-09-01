@@ -1,176 +1,154 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import { composeCourseBuildPrompt } from "../app/course-prompts";
+import { acquireYouTubeTranscript } from "./transcript-acquisition";
+import { getSystemPrompt } from "../app/system-prompts";
+import { getSystemPromptSettings, readSystemPromptOverrides, writeSystemPromptOverrides } from "./system-prompt-store";
+import { VidmarkDatabase } from "./vidmark-db";
+import { VidmarkSyncService } from "./vidmark-sync";
 
-const MCP_PORT = 31417;
+const MCP_PORT = Number(process.env.VIDMARK_MCP_PORT ?? 31417);
+const choice = z.enum(["A", "B", "C", "D"]);
+const questionSchema = z.object({
+  id: z.string().min(1), enabled: z.boolean().default(true), sectionId: z.string().min(1), domainId: z.string().min(1),
+  difficulty: z.enum(["foundational", "standard", "advanced"]), mode: z.enum(["standard", "hard"]), scenario: z.string().min(1), question: z.string().min(1),
+  options: z.object({ A: z.object({ text: z.string().min(1), rationale: z.string().min(1) }), B: z.object({ text: z.string().min(1), rationale: z.string().min(1) }), C: z.object({ text: z.string().min(1), rationale: z.string().min(1) }), D: z.object({ text: z.string().min(1), rationale: z.string().min(1) }) }),
+  correctAnswer: choice,
+  grading: z.object({ temptingDistractor: choice, principle: z.string().min(1), missType: z.enum(["judgment", "recall"]), hinge: z.string().min(1) }),
+  videoReferences: z.array(z.object({ timestampSeconds: z.number().int().min(0), label: z.string().min(1), screenshot: z.string().optional() })).default([]),
+  sources: z.array(z.object({ label: z.string().min(1), url: z.string().url(), accessedAt: z.string().min(1) })).default([]), tags: z.array(z.string().min(1)).default([]),
+});
+const textResult = (value: unknown) => ({ content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }] });
+const parseRecord = (value: string, label: string) => { const parsed = JSON.parse(value) as unknown; if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${label} must be a JSON object.`); return parsed as Record<string, unknown>; };
+const parseArray = (value: string | undefined, label: string) => { if (!value) return undefined; const parsed = JSON.parse(value) as unknown; if (!Array.isArray(parsed)) throw new Error(`${label} must be a JSON array.`); return parsed; };
 
-type TranscriptCue = { time: number; text: string };
-type CourseRecord = {
-  id: string;
-  title: string;
-  source: string;
-  videoUrl: string;
-  originPrompt: string;
-  promptCredit: string;
-  transcript: TranscriptCue[];
-  studyGuide?: string;
-  chapters?: unknown[];
-  questions?: unknown[];
-  researchNotes?: string;
-  updatedAt: number;
-};
-type NoteRecord = { id: string; courseId: string; chapterId: string; chapterTitle: string; text: string; source: "text" | "voice"; updatedAt: number; hasAudio: boolean };
-type VidmarkState = { activeCourseId: string; courses: CourseRecord[]; notes: NoteRecord[]; updatedAt: number };
-
-const emptyState = (): VidmarkState => ({ activeCourseId: "", courses: [], notes: [], updatedAt: Date.now() });
-
-export function startVidmarkMcpServer(statePath: string) {
-  let updateQueue: Promise<unknown> = Promise.resolve();
-
-  const readState = async (): Promise<VidmarkState> => {
-    try {
-      const parsed = JSON.parse(await readFile(statePath, "utf8")) as Partial<VidmarkState>;
-      return { activeCourseId: parsed.activeCourseId ?? "", courses: Array.isArray(parsed.courses) ? parsed.courses : [], notes: Array.isArray(parsed.notes) ? parsed.notes : [], updatedAt: parsed.updatedAt ?? Date.now() };
-    } catch { return emptyState(); }
-  };
-
-  const writeState = async (state: VidmarkState) => {
-    await mkdir(dirname(statePath), { recursive: true });
-    const temporaryPath = `${statePath}.next`;
-    await writeFile(temporaryPath, JSON.stringify({ ...state, updatedAt: Date.now() }, null, 2), "utf8");
-    await rename(temporaryPath, statePath);
-  };
-
-  const updateState = async (update: (current: VidmarkState) => VidmarkState | Promise<VidmarkState>) => {
-    let result = emptyState();
-    updateQueue = updateQueue.then(async () => { result = await update(await readState()); await writeState(result); });
-    await updateQueue;
-    return result;
-  };
-
-  const textResult = (value: unknown) => ({ content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }] });
-
+export async function startVidmarkMcpServer(databasePath: string, options: { legacyStatePath?: string; systemPromptsPath?: string } = {}) {
+  await mkdir(dirname(databasePath), { recursive: true });
+  const systemPromptsPath = options.systemPromptsPath ?? join(dirname(databasePath), "system-prompts.json");
+  const store = new VidmarkDatabase(databasePath);
+  await store.importLegacyState(options.legacyStatePath);
+  const sync = await new VidmarkSyncService(store).start();
   const handler = createMcpHandler(() => {
-    const server = new McpServer({ name: "vidmark-local", version: "1.0.0" }, { capabilities: { tools: {} } });
-
-    server.registerTool("list_courses", { description: "List every local Vidmark course, including its required course-prompt credit and artifact counts.", inputSchema: z.object({}) }, async () => {
-      const state = await readState();
-      return textResult(state.courses.map(({ transcript, chapters, questions, originPrompt, ...course }) => ({ ...course, promptExcerpt: originPrompt.slice(0, 240), transcriptCues: transcript.length, chapters: chapters?.length ?? 0, questions: questions?.length ?? 0, active: course.id === state.activeCourseId })));
-    });
-
-    server.registerTool("get_course", { description: "Read one course, its credited course-specific prompt, and generated artifacts. The build_vidmark_course MCP prompt combines this with Vidmark’s master instructions.", inputSchema: z.object({ courseId: z.string().min(1) }) }, async ({ courseId }) => {
-      const course = (await readState()).courses.find((item) => item.id === courseId);
-      if (!course) return textResult({ error: `Course ${courseId} was not found.` });
-      const { originPrompt, ...details } = course;
-      return textResult({ ...details, coursePrompt: originPrompt });
-    });
-
-    server.registerPrompt("build_vidmark_course", {
-      title: "Build a Vidmark course",
-      description: "Combine Vidmark’s master course-building prompt with the course’s required custom prompt.",
-      argsSchema: z.object({ courseId: z.string().min(1).describe("Vidmark course ID from list_courses") }),
-    }, async ({ courseId }) => {
-      const course = (await readState()).courses.find((item) => item.id === courseId);
-      const instruction = course
-        ? composeCourseBuildPrompt(course.title, course.id, course.originPrompt, course.promptCredit)
-        : `Course ${courseId} was not found. Call list_courses and choose a valid course ID before continuing.`;
+    const server = new McpServer({ name: "vidmark-local", version: "3.1.0" }, { capabilities: { tools: {}, prompts: {} } });
+    server.registerTool("list_courses", { description: "List local Vidmark courses with SQLite-backed artifact counts and revisions.", inputSchema: z.object({}) }, async () => textResult(store.listCourses()));
+    server.registerTool("get_course", { description: "Read one course, its credited prompt, transcript, chapters, question records, and course-scoped concept graph.", inputSchema: z.object({ courseId: z.string().min(1) }) }, async ({ courseId }) => textResult(store.getCourse(courseId) ?? { error: `Course ${courseId} was not found.` }));
+    server.registerPrompt("build_vidmark_course", { title: "Build a Vidmark course", description: "Combine Vidmark’s master course-building prompt with the course’s required custom prompt.", argsSchema: z.object({ courseId: z.string().min(1).describe("Vidmark course ID from list_courses") }) }, async ({ courseId }) => {
+      const course = store.getCourse(courseId);
+      const storedPrompts = await readSystemPromptOverrides(systemPromptsPath);
+      const instruction = course ? composeCourseBuildPrompt(String(course.title), String(course.id), String(course.coursePrompt), String(course.promptCredit), getSystemPrompt("courseBuilderMaster", storedPrompts.overrides)) : `Course ${courseId} was not found. Call list_courses and choose a valid course ID before continuing.`;
       return { messages: [{ role: "user" as const, content: { type: "text" as const, text: instruction } }] };
     });
-
-    server.registerTool("upsert_course", { description: "Create or update a course and its required credited course-specific prompt. Vidmark adds the master prompt automatically.", inputSchema: z.object({ courseId: z.string().min(1), title: z.string().min(1), source: z.string().default("YouTube"), videoUrl: z.string().url(), coursePrompt: z.string().min(1), promptCredit: z.string().min(1) }) }, async (input) => {
-      const state = await updateState((current) => {
-        const existing = current.courses.find((item) => item.id === input.courseId);
-        const course: CourseRecord = { ...existing, id: input.courseId, title: input.title, source: input.source, videoUrl: input.videoUrl, originPrompt: input.coursePrompt, promptCredit: input.promptCredit, transcript: existing?.transcript ?? [], updatedAt: Date.now() };
-        return { ...current, activeCourseId: current.activeCourseId || input.courseId, courses: [...current.courses.filter((item) => item.id !== input.courseId), course] };
-      });
-      return textResult({ saved: input.courseId, courses: state.courses.length });
+    server.registerTool("upsert_course", { description: "Create or update course metadata and its required credited course-specific prompt.", inputSchema: z.object({ courseId: z.string().min(1), title: z.string().min(1), source: z.string().default("YouTube"), videoUrl: z.string().url(), coursePrompt: z.string().min(1), promptCredit: z.string().min(1) }) }, async (input) => { const saved = store.upsertCourse({ id: input.courseId, title: input.title, source: input.source, videoUrl: input.videoUrl, originPrompt: input.coursePrompt, promptCredit: input.promptCredit }); return textResult({ saved: input.courseId, revision: saved?.revision }); });
+    server.registerTool("save_course_build", { description: "Replace reviewed course-level artifacts, including its concept graph. Prefer granular tools when changing an individual artifact.", inputSchema: z.object({ courseId: z.string().min(1), studyGuide: z.string().optional(), researchNotes: z.string().optional(), chaptersJson: z.string().optional(), questionsJson: z.string().optional(), conceptGraphJson: z.string().optional() }) }, async ({ courseId, studyGuide, researchNotes, chaptersJson, questionsJson, conceptGraphJson }) => {
+      const course = store.getCourse(courseId); if (!course) return textResult({ error: `Course ${courseId} was not found.` });
+      const chapters = parseArray(chaptersJson, "chaptersJson"); const questions = parseArray(questionsJson, "questionsJson"); const conceptGraph = conceptGraphJson ? parseRecord(conceptGraphJson, "conceptGraphJson") : undefined;
+      store.upsertCourse({ id: courseId, title: String(course.title), source: String(course.source), videoUrl: String(course.videoUrl), originPrompt: String(course.coursePrompt), promptCredit: String(course.promptCredit), studyGuide, researchNotes });
+      if (chapters) store.replaceChapters(courseId, chapters); if (questions) store.replaceQuestions(courseId, questions); if (conceptGraph) store.saveConceptGraph(courseId, conceptGraph);
+      return textResult({ saved: courseId, chapters: chapters?.length, questions: questions?.length, conceptGraph: conceptGraph ? { nodes: (conceptGraph.nodes as unknown[])?.length ?? 0, edges: (conceptGraph.edges as unknown[])?.length ?? 0 } : undefined, revision: store.getCourse(courseId)?.revision });
     });
-
-    server.registerTool("save_course_build", { description: "Save agent-researched course artifacts. chaptersJson and questionsJson must be JSON arrays; source citations belong inside each artifact.", inputSchema: z.object({ courseId: z.string().min(1), studyGuide: z.string().optional(), researchNotes: z.string().optional(), chaptersJson: z.string().optional(), questionsJson: z.string().optional() }) }, async ({ courseId, studyGuide, researchNotes, chaptersJson, questionsJson }) => {
-      const parseArray = (value: string | undefined, label: string) => {
-        if (!value) return undefined;
-        const parsed = JSON.parse(value) as unknown;
-        if (!Array.isArray(parsed)) throw new Error(`${label} must be a JSON array.`);
-        return parsed;
-      };
-      const chapters = parseArray(chaptersJson, "chaptersJson");
-      const questions = parseArray(questionsJson, "questionsJson");
-      let found = false;
-      await updateState((current) => ({ ...current, courses: current.courses.map((course) => {
-        if (course.id !== courseId) return course;
-        found = true;
-        return { ...course, studyGuide: studyGuide ?? course.studyGuide, researchNotes: researchNotes ?? course.researchNotes, chapters: chapters ?? course.chapters, questions: questions ?? course.questions, updatedAt: Date.now() };
-      }) }));
-      return textResult(found ? { saved: courseId, chapters: chapters?.length, questions: questions?.length } : { error: `Course ${courseId} was not found.` });
+    server.registerTool("list_course_chapters", { description: "List normalized chapter artifacts for a course in display order.", inputSchema: z.object({ courseId: z.string().min(1) }) }, async ({ courseId }) => textResult({ courseId, chapters: store.listChapters(courseId) }));
+    server.registerTool("get_course_concept_graph", { description: "Read the independently revisioned concept graph for one course.", inputSchema: z.object({ courseId: z.string().min(1) }) }, async ({ courseId }) => textResult({ conceptGraph: store.getConceptGraph(courseId) }));
+    server.registerTool("upsert_course_concept_graph", { description: "Create or replace one course's validated concept graph. Pass expectedRevision when updating to prevent lost writes.", inputSchema: z.object({ courseId: z.string().min(1), conceptGraphJson: z.string().min(2), expectedRevision: z.number().int().min(1).optional() }) }, async ({ courseId, conceptGraphJson, expectedRevision }) => textResult(store.saveConceptGraph(courseId, parseRecord(conceptGraphJson, "conceptGraphJson"), expectedRevision)));
+    server.registerTool("list_course_questions", { description: "List questions with stable IDs, archived state, and optimistic-concurrency revisions.", inputSchema: z.object({ courseId: z.string().min(1), query: z.string().optional(), includeArchived: z.boolean().default(false), limit: z.number().int().min(1).max(1000).default(250), offset: z.number().int().min(0).default(0) }) }, async (input) => textResult(store.listQuestions(input.courseId, input)));
+    server.registerTool("get_course_question", { description: "Read one question including choices, rationales, grading guidance, citations, and revision.", inputSchema: z.object({ courseId: z.string().min(1), questionId: z.string().min(1) }) }, async ({ courseId, questionId }) => textResult(store.getQuestion(courseId, questionId) ?? { error: `Question ${questionId} was not found.` }));
+    server.registerTool("upsert_course_question", { description: "Create or fully replace one validated question. Pass expectedRevision when updating to prevent lost writes.", inputSchema: z.object({ courseId: z.string().min(1), question: questionSchema, expectedRevision: z.number().int().min(1).optional(), position: z.number().int().min(0).optional() }) }, async ({ courseId, question, expectedRevision, position }) => textResult(store.upsertQuestion(courseId, question, expectedRevision, position)));
+    server.registerTool("patch_course_question", { description: "Apply a JSON Merge Patch to one question, including answers, rationales, grading, sources, or tags.", inputSchema: z.object({ courseId: z.string().min(1), questionId: z.string().min(1), patchJson: z.string().min(2), expectedRevision: z.number().int().min(1) }) }, async ({ courseId, questionId, patchJson, expectedRevision }) => textResult(store.patchQuestion(courseId, questionId, parseRecord(patchJson, "patchJson"), expectedRevision)));
+    server.registerTool("archive_course_question", { description: "Soft-delete one question while retaining its history and stable ID.", inputSchema: z.object({ courseId: z.string().min(1), questionId: z.string().min(1), expectedRevision: z.number().int().min(1) }) }, async ({ courseId, questionId, expectedRevision }) => textResult(store.archiveQuestion(courseId, questionId, expectedRevision)));
+    server.registerTool("create_question_suggestion", { description: "Propose a reviewed create, update, or archive operation without immediately changing the bank.", inputSchema: z.object({ courseId: z.string().min(1), questionId: z.string().optional(), kind: z.enum(["create", "update", "archive"]), title: z.string().min(1), rationale: z.string().min(1), proposedPatchJson: z.string().min(2), sourcesJson: z.string().default("[]") }) }, async (input) => {
+      const profile = store.getProfile(); const suggestion = store.createSuggestion({ courseId: input.courseId, questionId: input.questionId, kind: input.kind, title: input.title, rationale: input.rationale, proposedPatch: parseRecord(input.proposedPatchJson, "proposedPatchJson"), sources: parseArray(input.sourcesJson, "sourcesJson") ?? [], authorProfile: profile ? { id: profile.id, name: profile.name, email: profile.email, avatarStyle: profile.avatarStyle, avatarSeed: profile.avatarSeed } : undefined }); return textResult(suggestion);
     });
-
-    server.registerTool("get_transcript", { description: "Read or search a course transcript with timestamps.", inputSchema: z.object({ courseId: z.string().min(1), query: z.string().optional(), limit: z.number().int().min(1).max(1000).default(250) }) }, async ({ courseId, query, limit }) => {
-      const course = (await readState()).courses.find((item) => item.id === courseId);
+    server.registerTool("list_question_suggestions", { description: "List pending, accepted, or rejected question suggestions.", inputSchema: z.object({ courseId: z.string().optional(), status: z.enum(["pending", "accepted", "rejected"]).optional() }) }, async (input) => textResult({ suggestions: store.listSuggestions(input) }));
+    server.registerTool("review_question_suggestion", { description: "Accept or reject a pending suggestion. Acceptance applies its change atomically.", inputSchema: z.object({ suggestionId: z.string().min(1), decision: z.enum(["accepted", "rejected"]), reviewNote: z.string().optional() }) }, async ({ suggestionId, decision, reviewNote }) => textResult(store.reviewSuggestion(suggestionId, decision, store.getProfile()?.id, reviewNote)));
+    server.registerTool("get_transcript", { description: "Read or search a course transcript with timestamps.", inputSchema: z.object({ courseId: z.string().min(1), query: z.string().optional(), limit: z.number().int().min(1).max(1000).default(250) }) }, async ({ courseId, query, limit }) => textResult(store.getTranscript(courseId, query, limit)));
+    server.registerTool("replace_transcript", { description: "Replace a transcript with timestamped cues after authorized extraction or import.", inputSchema: z.object({ courseId: z.string().min(1), cues: z.array(z.object({ time: z.number().min(0), text: z.string().min(1) })).max(100000) }) }, async ({ courseId, cues }) => { store.replaceTranscript(courseId, cues); return textResult({ saved: courseId, cues: cues.length }); });
+    server.registerTool("acquire_course_transcript", { description: "Retrieve a course video's public YouTube caption track, preserve its timestamps, and save it to local SQLite. Use this when get_transcript reports no cues; it does not bypass authentication or unavailable captions.", inputSchema: z.object({ courseId: z.string().min(1), preferredLanguage: z.string().min(2).max(20).default("en") }) }, async ({ courseId, preferredLanguage }) => {
+      const course = store.getCourse(courseId);
       if (!course) return textResult({ error: `Course ${courseId} was not found.` });
-      const needle = query?.trim().toLowerCase();
-      const cues = (needle ? course.transcript.filter((cue) => cue.text.toLowerCase().includes(needle)) : course.transcript).slice(0, limit);
-      return textResult({ courseId, totalCues: course.transcript.length, returned: cues.length, cues });
+      const acquired = await acquireYouTubeTranscript(String(course.videoUrl ?? course.videoId ?? course.id), preferredLanguage);
+      store.replaceTranscript(courseId, acquired.cues);
+      return textResult({ saved: courseId, cues: acquired.cues.length, videoId: acquired.videoId, language: acquired.language, trackName: acquired.trackName, automaticallyGenerated: acquired.automaticallyGenerated, sourceUrl: acquired.sourceUrl, acquiredAt: acquired.acquiredAt });
     });
-
-    server.registerTool("replace_transcript", { description: "Replace a course transcript with timestamped cues after authorized extraction or import.", inputSchema: z.object({ courseId: z.string().min(1), cues: z.array(z.object({ time: z.number().min(0), text: z.string().min(1) })).max(100000) }) }, async ({ courseId, cues }) => {
-      let found = false;
-      await updateState((current) => ({ ...current, courses: current.courses.map((course) => {
-        if (course.id !== courseId) return course;
-        found = true;
-        return { ...course, transcript: cues, updatedAt: Date.now() };
-      }) }));
-      return textResult(found ? { saved: courseId, cues: cues.length } : { error: `Course ${courseId} was not found.` });
-    });
-
-    server.registerTool("list_notes", { description: "List text and voice-note transcripts, optionally filtered by course.", inputSchema: z.object({ courseId: z.string().optional(), query: z.string().optional() }) }, async ({ courseId, query }) => {
-      const state = await readState();
-      const needle = query?.trim().toLowerCase();
-      const notes = state.notes.filter((note) => (!courseId || note.courseId === courseId) && (!needle || `${note.chapterTitle} ${note.text}`.toLowerCase().includes(needle)));
-      return textResult({ count: notes.length, notes });
-    });
-
+    server.registerTool("list_notes", { description: "List text and voice-note transcripts, optionally filtered by course.", inputSchema: z.object({ courseId: z.string().optional(), query: z.string().optional() }) }, async ({ courseId, query }) => { const notes = store.listNotes(courseId, query); return textResult({ count: notes.length, notes }); });
+    server.registerTool("get_profile", { description: "Read the local learner profile used for attribution and collaboration.", inputSchema: z.object({}) }, async () => textResult({ profile: store.getProfile() }));
+    server.registerTool("upsert_profile", { description: "Create or update the learner profile and DiceBear avatar settings.", inputSchema: z.object({ name: z.string().min(1), email: z.string().email(), avatarStyle: z.string().min(1), avatarSeed: z.string().min(1) }) }, async (input) => { const profile = store.saveProfile(input); await sync.registerDirectory(); return textResult({ profile }); });
+    server.registerTool("get_sync_status", { description: "Report whether this Vidmark installation is connected to the hosted sync service. This is device-to-relay status, not another user's presence.", inputSchema: z.object({}) }, async () => textResult(sync.getStatus()));
+    server.registerTool("search_vidmark_users", { description: "Search the hosted Vidmark employee directory by name or registered email address.", inputSchema: z.object({ query: z.string().min(2) }) }, async ({ query }) => textResult({ users: await sync.searchDirectory(query) }));
+    server.registerTool("share_question_suggestion_with_user", { description: "Find a registered Vidmark user by name or email and send an existing question suggestion to all of their registered devices using end-to-end encrypted delivery.", inputSchema: z.object({ userQuery: z.string().min(2), suggestionId: z.string().min(1) }) }, async ({ userQuery, suggestionId }) => { const suggestion = store.getSuggestion(suggestionId); if (!suggestion) return textResult({ error: `Suggestion ${suggestionId} was not found.` }); const users = await sync.searchDirectory(userQuery); const recipient = users.find((user) => user.profile.email.toLowerCase() === userQuery.toLowerCase() || user.profile.name.toLowerCase() === userQuery.toLowerCase()) ?? users[0]; return recipient ? textResult(await sync.shareSuggestionWithUser(recipient, suggestion)) : textResult({ error: `No registered Vidmark user matched ${userQuery}. No email was sent.` }); });
+    server.registerTool("share_course_question_with_user", { description: "Find a registered Vidmark user by name or email and send a complete question, answer, and rationales as an end-to-end encrypted import notification.", inputSchema: z.object({ courseId: z.string().min(1), questionId: z.string().min(1), userQuery: z.string().min(2) }) }, async ({ courseId, questionId, userQuery }) => { const question = store.getQuestion(courseId, questionId); if (!question) return textResult({ error: `Question ${questionId} was not found.` }); const users = await sync.searchDirectory(userQuery); const recipient = users.find((user) => user.profile.email.toLowerCase() === userQuery.toLowerCase() || user.profile.name.toLowerCase() === userQuery.toLowerCase()) ?? users[0]; return recipient ? textResult(await sync.shareQuestionWithUser(recipient, question)) : textResult({ error: `No registered Vidmark user matched ${userQuery}. No email was sent.` }); });
+    server.registerTool("share_note_with_user", { description: "Find a registered Vidmark user by name or email and send a text or transcribed voice note to all of their registered devices using end-to-end encrypted delivery.", inputSchema: z.object({ noteId: z.string().min(1), userQuery: z.string().min(2) }) }, async ({ noteId, userQuery }) => { const note = store.listNotes().find((item) => String((item as Record<string, unknown>).id) === noteId) as Record<string, unknown> | undefined; if (!note) return textResult({ error: `Note ${noteId} was not found.` }); const users = await sync.searchDirectory(userQuery); const recipient = users.find((user) => user.profile.email.toLowerCase() === userQuery.toLowerCase() || user.profile.name.toLowerCase() === userQuery.toLowerCase()) ?? users[0]; return recipient ? textResult(await sync.shareNoteWithUser(recipient, note)) : textResult({ error: `No registered Vidmark user matched ${userQuery}. No email was sent.` }); });
+    server.registerTool("share_course_with_user", { description: "Look up a registered Vidmark user by name or email and add a complete encrypted course invitation to their Vidmark inbox. This never sends email.", inputSchema: z.object({ courseId: z.string().min(1), userQuery: z.string().min(2) }) }, async ({ courseId, userQuery }) => { const users = await sync.searchDirectory(userQuery); const exact = users.find((user) => user.profile.email.toLowerCase() === userQuery.toLowerCase() || user.profile.name.toLowerCase() === userQuery.toLowerCase()) ?? users[0]; return exact ? textResult(await sync.shareCourseWithUser(courseId, exact)) : textResult({ error: `No registered Vidmark user matched ${userQuery}. No email was sent.` }); });
+    server.registerTool("create_course_share_link", { description: "Create a seven-day HTTPS bearer-token invite for a complete course.", inputSchema: z.object({ courseId: z.string().min(1), oneTime: z.boolean().default(false) }) }, async ({ courseId, oneTime }) => textResult(await sync.createCourseShareLink(courseId, oneTime)));
+    server.registerTool("import_course_share_link", { description: "Resolve an HTTPS course invite into a pending inbox invitation.", inputSchema: z.object({ link: z.string().url() }) }, async ({ link }) => textResult(await sync.importCourseShareLink(link)));
+    server.registerTool("revoke_course_share_link", { description: "Revoke an HTTPS course invite created by this Vidmark device.", inputSchema: z.object({ link: z.string().url() }) }, async ({ link }) => textResult(await sync.revokeCourseShareLink(link)));
+    server.registerTool("list_inbox", { description: "List course invitations and public revision notifications with read/unread state.", inputSchema: z.object({ status: z.enum(["unread", "read"]).optional(), type: z.enum(["course_invite", "message", "revision"]).optional() }) }, async (input) => textResult({ items: store.listInbox(input) }));
+    server.registerTool("update_inbox_item", { description: "Mark an inbox item read or unread.", inputSchema: z.object({ itemId: z.string().min(1), status: z.enum(["unread", "read"]) }) }, async ({ itemId, status }) => textResult(store.updateInboxItem(itemId, { status })));
+    server.registerTool("review_course_invite", { description: "Accept or reject a pending full-course invitation. Acceptance imports the complete course into local SQLite.", inputSchema: z.object({ itemId: z.string().min(1), decision: z.enum(["accepted", "rejected"]) }) }, async ({ itemId, decision }) => textResult(store.reviewCourseInvite(itemId, decision)));
+    server.registerTool("get_global_course", { description: "Read the locked global course registered for a YouTube video ID.", inputSchema: z.object({ videoId: z.string().min(1) }) }, async ({ videoId }) => textResult({ global: await sync.getGlobalCourse(videoId) }));
+    server.registerTool("publish_course_version", { description: "Register the first global course for a video, publish an owner revision, or submit a fork as a revision proposal.", inputSchema: z.object({ courseId: z.string().min(1) }) }, async ({ courseId }) => textResult(await sync.publishOrProposeCourse(courseId)));
+    server.registerTool("make_course_private", { description: "Make the local course version private. A previously published global snapshot remains locked and available.", inputSchema: z.object({ courseId: z.string().min(1) }) }, async ({ courseId }) => textResult(sync.setCoursePrivate(courseId)));
+    server.registerTool("import_global_course", { description: "Import the locked global course for a video into local SQLite as a forkable snapshot.", inputSchema: z.object({ videoId: z.string().min(1) }) }, async ({ videoId }) => textResult(await sync.importGlobalCourse(videoId)));
+    server.registerTool("list_global_course_revisions", { description: "List proposed, accepted, and rejected revisions for a video's global course.", inputSchema: z.object({ videoId: z.string().min(1) }) }, async ({ videoId }) => textResult({ revisions: await sync.listGlobalRevisions(videoId) }));
+    server.registerTool("review_global_course_revision", { description: "Accept or reject a revision proposal. Only the registered global owner can review it.", inputSchema: z.object({ videoId: z.string().min(1), revisionId: z.string().min(1), decision: z.enum(["accepted", "rejected"]) }) }, async ({ videoId, revisionId, decision }) => textResult(await sync.reviewGlobalRevision(revisionId, decision, videoId)));
+    server.registerTool("list_course_comments", { description: "List the public message thread keyed by YouTube video ID.", inputSchema: z.object({ videoId: z.string().min(1) }) }, async ({ videoId }) => textResult({ comments: await sync.listComments(videoId) }));
+    server.registerTool("post_course_comment", { description: "Post a public comment or reply to the message thread for a YouTube course.", inputSchema: z.object({ courseId: z.string().min(1), body: z.string().min(1).max(5000), parentId: z.string().optional() }) }, async ({ courseId, body, parentId }) => textResult(await sync.postComment(courseId, body, parentId)));
+    server.registerTool("get_sync_preferences", { description: "Read this learner's relay and question-import preferences.", inputSchema: z.object({}) }, async () => textResult(store.getSyncPreferences()));
+    server.registerTool("update_sync_preferences", { description: "Update the relay URL or opt into automatic question imports. Automatic imports are disabled by default.", inputSchema: z.object({ autoImportQuestions: z.boolean().optional(), relayUrl: z.string().optional() }) }, async (input) => { const saved = store.saveSyncPreferences(input); sync.refreshRelay(); return textResult(saved); });
     return server;
   });
 
-  const corsHeaders = (request: Request) => {
-    const origin = request.headers.get("origin");
-    const allowed = origin === "http://127.0.0.1:3010" || origin === "http://localhost:3010" ? origin : "http://127.0.0.1:3010";
-    return { "Access-Control-Allow-Origin": allowed, "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, MCP-Protocol-Version, Mcp-Session-Id, Mcp-Method, Mcp-Name", "Access-Control-Expose-Headers": "Mcp-Session-Id" };
-  };
-
-  const server = Bun.serve({
-    hostname: "127.0.0.1", port: MCP_PORT, idleTimeout: 120,
-    async fetch(request) {
-      const url = new URL(request.url);
-      const headers = corsHeaders(request);
-      const host = request.headers.get("host")?.split(":")[0];
-      if (host !== "127.0.0.1" && host !== "localhost") return Response.json({ error: "Invalid Host header." }, { status: 403, headers });
-      if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
-      if (url.pathname === "/health") return Response.json({ ok: true, name: "vidmark-local", mcp: `http://127.0.0.1:${MCP_PORT}/mcp`, statePath }, { headers });
-      if (url.pathname === "/state" && request.method === "GET") return Response.json(await readState(), { headers });
-      if (url.pathname === "/state/sync" && request.method === "POST") {
-        const incoming = await request.json() as Pick<VidmarkState, "activeCourseId" | "courses" | "notes">;
-        const state = await updateState((current) => {
-          const courses = (Array.isArray(incoming.courses) ? incoming.courses : []).map((course) => {
-            const existing = current.courses.find((item) => item.id === course.id);
-            return { ...existing, ...course, studyGuide: existing?.studyGuide, chapters: existing?.chapters, questions: existing?.questions, researchNotes: existing?.researchNotes, updatedAt: Date.now() };
-          });
-          return { ...current, activeCourseId: incoming.activeCourseId || current.activeCourseId, courses, notes: Array.isArray(incoming.notes) ? incoming.notes : current.notes };
-        });
-        return Response.json({ ok: true, courses: state.courses.length, notes: state.notes.length }, { headers });
+  const allowedOrigins = new Set((process.env.VIDMARK_ALLOWED_ORIGINS ?? "http://127.0.0.1:3010,http://localhost:3010").split(",").map((value) => value.trim()).filter(Boolean));
+  const corsHeaders = (request: Request) => { const origin = request.headers.get("origin"); const allowed = origin && allowedOrigins.has(origin) ? origin : [...allowedOrigins][0] ?? "http://127.0.0.1:3010"; return { "Access-Control-Allow-Origin": allowed, "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, MCP-Protocol-Version, Mcp-Session-Id, Mcp-Method, Mcp-Name", "Access-Control-Expose-Headers": "Mcp-Session-Id" }; };
+  const server = Bun.serve({ hostname: "127.0.0.1", port: MCP_PORT, idleTimeout: 120, async fetch(request) {
+    const url = new URL(request.url); const headers = corsHeaders(request); const host = request.headers.get("host")?.split(":")[0];
+    if (host !== "127.0.0.1" && host !== "localhost") return Response.json({ error: "Invalid Host header." }, { status: 403, headers });
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
+    try {
+      if (url.pathname === "/health") return Response.json({ ok: true, name: "vidmark-local", version: "3.2.0", mcp: `http://127.0.0.1:${MCP_PORT}/mcp`, databasePath, sync: sync.getStatus() }, { headers });
+      if (url.pathname === "/state" && request.method === "GET") return Response.json({ activeCourseId: store.listCourses().find((course) => course.active)?.id ?? "", courses: store.listCourses(), notes: store.listNotes(), profile: store.getProfile() }, { headers });
+      if (url.pathname === "/state/sync" && request.method === "POST") { const incoming = await request.json() as { activeCourseId?: string; courses?: LegacySyncCourse[]; notes?: Array<Record<string, unknown>> }; for (const course of incoming.courses ?? []) store.upsertCourse({ ...course, active: course.id === incoming.activeCourseId }); for (const note of incoming.notes ?? []) store.upsertNote(note); return Response.json({ ok: true, courses: store.listCourses().length, notes: store.listNotes().length }, { headers }); }
+      if (url.pathname === "/api/profile") { if (request.method === "GET") return Response.json({ profile: store.getProfile() }, { headers }); if (request.method === "POST") { const profile = store.saveProfile(await request.json() as { name: string; email: string; avatarStyle: string; avatarSeed: string }); await sync.registerDirectory(); return Response.json({ profile }, { headers }); } }
+      if (url.pathname === "/api/preferences") { if (request.method === "GET") return Response.json({ preferences: store.getSyncPreferences() }, { headers }); if (request.method === "POST") { const preferences = store.saveSyncPreferences(await request.json() as { autoImportQuestions?: boolean; relayUrl?: string }); sync.refreshRelay(); return Response.json({ preferences }, { headers }); } }
+      if (url.pathname === "/api/system-prompts") { if (request.method === "GET") return Response.json(await getSystemPromptSettings(systemPromptsPath), { headers }); if (request.method === "PUT") return Response.json(await writeSystemPromptOverrides(systemPromptsPath, (await request.json() as { overrides?: unknown }).overrides), { headers }); }
+      if (url.pathname === "/api/courses" && request.method === "GET") return Response.json({ courses: store.listCourses() }, { headers });
+      const courseRoute = url.pathname.match(/^\/api\/courses\/([^/]+)$/); if (courseRoute && request.method === "GET") return Response.json({ course: store.getCourse(decodeURIComponent(courseRoute[1])) }, { headers });
+      if (url.pathname === "/api/concept-graph" && request.method === "GET") return Response.json({ conceptGraph: store.getConceptGraph(url.searchParams.get("courseId") ?? "") }, { headers });
+      if (url.pathname === "/api/concept-graph" && request.method === "POST") { const body = await request.json() as { courseId: string; conceptGraph: Record<string, unknown>; expectedRevision?: number }; return Response.json({ conceptGraph: store.saveConceptGraph(body.courseId, body.conceptGraph, body.expectedRevision) }, { headers }); }
+      if (url.pathname === "/api/questions" && request.method === "GET") return Response.json(store.listQuestions(url.searchParams.get("courseId") ?? "", { includeArchived: url.searchParams.get("includeArchived") === "true", limit: Number(url.searchParams.get("limit") ?? 1000) }), { headers });
+      const questionRoute = url.pathname.match(/^\/api\/questions\/([^/]+)\/([^/]+)$/); if (questionRoute && request.method === "GET") return Response.json({ question: store.getQuestion(decodeURIComponent(questionRoute[1]), decodeURIComponent(questionRoute[2])) }, { headers });
+      if (url.pathname === "/api/questions/share" && request.method === "POST") { const body = await request.json() as { courseId: string; questionId: string; recipient?: Parameters<typeof sync.shareQuestionWithUser>[0] }; const question = store.getQuestion(body.courseId, body.questionId); if (!question) return Response.json({ error: `Question ${body.questionId} was not found.` }, { status: 404, headers }); if (!body.recipient) return Response.json({ error: "Choose a registered Vidmark user by name or email." }, { status: 400, headers }); return Response.json(await sync.shareQuestionWithUser(body.recipient, question), { headers }); }
+      if (url.pathname === "/api/suggestions" && request.method === "GET") return Response.json({ suggestions: store.listSuggestions({ courseId: url.searchParams.get("courseId") ?? undefined, status: (url.searchParams.get("status") ?? undefined) as "pending" | "accepted" | "rejected" | undefined }) }, { headers });
+      const review = url.pathname.match(/^\/api\/suggestions\/([^/]+)\/review$/); if (review && request.method === "POST") { const body = await request.json() as { decision: "accepted" | "rejected"; reviewNote?: string }; return Response.json({ suggestion: store.reviewSuggestion(review[1], body.decision, store.getProfile()?.id, body.reviewNote) }, { headers }); }
+      if (url.pathname === "/api/sync" && request.method === "GET") return Response.json(sync.getStatus(), { headers });
+      if (url.pathname === "/api/notes" && request.method === "GET") return Response.json({ notes: store.listNotes(url.searchParams.get("courseId") ?? undefined) }, { headers });
+      if (url.pathname === "/api/notes/share" && request.method === "POST") { const body = await request.json() as { note: Record<string, unknown>; recipient?: Parameters<typeof sync.shareNoteWithUser>[0] }; store.upsertNote(body.note); if (!body.recipient) return Response.json({ error: "Choose a registered Vidmark user by name or email." }, { status: 400, headers }); return Response.json(await sync.shareNoteWithUser(body.recipient, body.note), { headers }); }
+      if (url.pathname === "/api/directory" && request.method === "GET") return Response.json({ users: await sync.searchDirectory(url.searchParams.get("query") ?? "") }, { headers });
+      if (url.pathname === "/api/courses/share" && request.method === "POST") { const body = await request.json() as { courseId: string; recipient?: Parameters<typeof sync.shareCourseWithUser>[1] }; if (!body.recipient) return Response.json({ error: "Choose a registered Vidmark user by name or email." }, { status: 400, headers }); return Response.json(await sync.shareCourseWithUser(body.courseId, body.recipient), { headers }); }
+      if (url.pathname === "/api/courses/share-link" && request.method === "POST") { const body = await request.json() as { courseId?: string; oneTime?: boolean }; return Response.json(await sync.createCourseShareLink(String(body.courseId ?? ""), Boolean(body.oneTime)), { headers }); }
+      if (url.pathname === "/api/courses/share-link/revoke" && request.method === "POST") return Response.json(await sync.revokeCourseShareLink(String((await request.json() as { link?: string }).link ?? "")), { headers });
+      if (url.pathname === "/api/courses/import-link" && request.method === "POST") return Response.json(await sync.importCourseShareLink(String((await request.json() as { link?: string }).link ?? "")), { headers });
+      if (url.pathname === "/api/inbox" && request.method === "GET") return Response.json({ items: store.listInbox({ status: (url.searchParams.get("status") ?? undefined) as "unread" | "read" | undefined }) }, { headers });
+      if (url.pathname === "/api/desktop-notifications" && request.method === "GET") {
+        const after = Math.max(0, Number(url.searchParams.get("after") ?? 0) || 0);
+        const notifications = store.listDesktopNotifications(after, Number(url.searchParams.get("limit") ?? 50));
+        return Response.json({ installationId: sync.getStatus().deviceId, notifications, cursor: notifications.at(-1)?.sequence ?? after, unreadCount: store.desktopUnreadCount() }, { headers });
       }
-      if (url.pathname === "/mcp") {
-        const response = await handler.fetch(request);
-        const outgoing = new Headers(response.headers);
-        Object.entries(headers).forEach(([key, value]) => outgoing.set(key, value));
-        return new Response(response.body, { status: response.status, statusText: response.statusText, headers: outgoing });
-      }
+      const inboxItem = url.pathname.match(/^\/api\/inbox\/([^/]+)$/); if (inboxItem && request.method === "POST") { const body = await request.json() as { status: "read" | "unread" }; return Response.json({ item: store.updateInboxItem(decodeURIComponent(inboxItem[1]), { status: body.status }) }, { headers }); }
+      const inboxReview = url.pathname.match(/^\/api\/inbox\/([^/]+)\/review$/); if (inboxReview && request.method === "POST") { const body = await request.json() as { decision: "accepted" | "rejected" }; return Response.json({ item: store.reviewCourseInvite(decodeURIComponent(inboxReview[1]), body.decision) }, { headers }); }
+      if (url.pathname === "/api/global-course" && request.method === "GET") return Response.json({ global: await sync.getGlobalCourse(url.searchParams.get("videoId") ?? "") }, { headers });
+      if (url.pathname === "/api/global-course/publish" && request.method === "POST") return Response.json(await sync.publishOrProposeCourse(String((await request.json() as { courseId?: string }).courseId ?? "")), { headers });
+      if (url.pathname === "/api/global-course/private" && request.method === "POST") return Response.json({ course: sync.setCoursePrivate(String((await request.json() as { courseId?: string }).courseId ?? "")) }, { headers });
+      if (url.pathname === "/api/global-course/import" && request.method === "POST") return Response.json(await sync.importGlobalCourse(String((await request.json() as { videoId?: string }).videoId ?? "")), { headers });
+      if (url.pathname === "/api/global-course/revisions" && request.method === "GET") return Response.json({ revisions: await sync.listGlobalRevisions(url.searchParams.get("videoId") ?? "") }, { headers });
+      if (url.pathname === "/api/global-course/revisions/review" && request.method === "POST") { const body = await request.json() as { videoId: string; revisionId: string; decision: "accepted" | "rejected" }; return Response.json(await sync.reviewGlobalRevision(body.revisionId, body.decision, body.videoId), { headers }); }
+      if (url.pathname === "/api/comments" && request.method === "GET") return Response.json({ comments: await sync.listComments(url.searchParams.get("videoId") ?? "") }, { headers });
+      if (url.pathname === "/api/comments" && request.method === "POST") { const body = await request.json() as { courseId: string; body: string; parentId?: string }; return Response.json({ comment: await sync.postComment(body.courseId, body.body, body.parentId) }, { headers }); }
+      if (url.pathname === "/mcp") { const response = await handler.fetch(request); const outgoing = new Headers(response.headers); Object.entries(headers).forEach(([key, value]) => outgoing.set(key, value)); return new Response(response.body, { status: response.status, statusText: response.statusText, headers: outgoing }); }
       return Response.json({ error: "Not found" }, { status: 404, headers });
-    },
-  });
-
-  console.log(`Vidmark MCP server is listening at http://127.0.0.1:${MCP_PORT}/mcp`);
-  return server;
+    } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Vidmark request failed." }, { status: 400, headers }); }
+  }});
+  console.log(`Vidmark MCP 3.1 is listening at http://127.0.0.1:${MCP_PORT}/mcp with SQLite at ${databasePath}`);
+  return { stop(force = false) { sync.stop(); server.stop(force); store.close(); }, store, sync, server };
 }
+type LegacySyncCourse = { id: string; title: string; source?: string; videoUrl?: string; originPrompt?: string; promptCredit?: string; transcript?: Array<{ time: number; text: string }>; conceptGraph?: unknown };

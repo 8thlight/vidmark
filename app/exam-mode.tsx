@@ -2,7 +2,10 @@
 
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { BarChart3, Check, ChevronLeft, ChevronRight, CirclePause, CirclePlay, Clock3, Eye, Flag, ListChecks, Network, RotateCcw, TimerReset, Trophy } from "lucide-react";
-import { domains } from "./exam-data";
+import { domains, type ExamQuestion } from "./exam-data";
+import bundledConceptGraph from "../data/concept-graph.json";
+import type { ConceptGraph } from "./concept-graph-types";
+import { getCourseConceptGraph } from "./vidmark-client";
 import {
   ActiveExam,
   buildAttempt,
@@ -39,13 +42,26 @@ const formatDuration = (seconds: number) => {
 const domainOrder = ["architecture", "tools", "code", "prompting", "context"] as const;
 const attemptColors = ["#ff624b", "#4b86ca", "#2d9c98", "#e4a229", "#9878cf"];
 
-export function ExamMode() {
+export function ExamMode({ questionBank, courseId }: { questionBank: ExamQuestion[]; courseId: string }) {
   const [tab, setTab] = useState<ExamTab>("session");
   const [exam, setExam] = useState<ActiveExam | null>(null);
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [showSubmit, setShowSubmit] = useState(false);
   const [studyAids, setStudyAids] = useState<Record<number, StudyAid>>({});
+  const [conceptGraphResult, setConceptGraphResult] = useState<{ courseId: string; graph: ConceptGraph | null } | null>(null);
+  const conceptGraphLoaded = conceptGraphResult?.courseId === courseId;
+  const conceptGraph = conceptGraphLoaded ? conceptGraphResult.graph : null;
+
+  useEffect(() => {
+    let active = true;
+    void getCourseConceptGraph(courseId).then((stored) => {
+      if (active) setConceptGraphResult({ courseId, graph: stored?.graph ?? null });
+    }).catch(() => {
+      if (active) setConceptGraphResult({ courseId, graph: courseId === "reDRM0tqhNs" ? bundledConceptGraph as ConceptGraph : null });
+    });
+    return () => { active = false; };
+  }, [courseId]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -77,7 +93,7 @@ export function ExamMode() {
   }, [activeExamId, examPaused]);
 
   const questionIds = exam?.questionIds;
-  const questions = useMemo(() => questionIds ? examQuestionsFromIds(questionIds) : [], [questionIds]);
+  const questions = useMemo(() => questionIds ? examQuestionsFromIds(questionIds, questionBank) : [], [questionBank, questionIds]);
   const activeQuestion = exam ? questions[exam.currentIndex] : null;
   const response = activeQuestion ? exam?.responses.find((item) => item.questionId === activeQuestion.id) : null;
   const answeredCount = exam?.responses.length ?? 0;
@@ -89,7 +105,7 @@ export function ExamMode() {
       id: `exam-${now}`,
       courseId: DEFAULT_EXAM_COURSE_ID,
       courseName: DEFAULT_EXAM_COURSE_NAME,
-      questionIds: createExamQuestionIds(now),
+      questionIds: createExamQuestionIds(now, questionBank),
       currentIndex: 0,
       responses: [],
       flaggedIds: [],
@@ -207,7 +223,7 @@ export function ExamMode() {
       ))}
 
       {tab === "results" && <ExamResults attempts={attempts} onStart={startExam} />}
-      {tab === "concepts" && <div className="concept-view"><header><span>CONCEPT RELATIONSHIPS</span><h1>Traverse the architecture</h1><p>Orbit, zoom, and select a node to explore how mechanisms and decision rules reinforce one another across domains.</p></header><Suspense fallback={<div className="graph-loading">Loading the local 3D graph…</div>}><ConceptGraph3D /></Suspense></div>}
+      {tab === "concepts" && <div className="concept-view"><header><span>CONCEPT RELATIONSHIPS</span><h1>Traverse the architecture</h1><p>Orbit, zoom, and select a node to explore how mechanisms and decision rules reinforce one another across domains.</p></header>{!conceptGraphLoaded ? <div className="graph-loading">Loading this course’s local concept graph…</div> : conceptGraph ? <Suspense fallback={<div className="graph-loading">Loading the local 3D graph…</div>}><ConceptGraph3D key={`${courseId}-${conceptGraph.graphId ?? "graph"}`} graph={conceptGraph} /></Suspense> : <div className="graph-loading">This course does not have a concept graph yet. An agent can add one through Vidmark MCP.</div>}</div>}
     </section>
   );
 }
