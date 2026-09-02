@@ -19,6 +19,12 @@ Vidmark is a local-first macOS study workspace with an integrated MCP server. It
 - Publish a course associated with a YouTube video ID, fork it when editing, propose revisions, and participate in its public discussion thread.
 - Receive native macOS notifications for invitations, shared content, revisions, and replies.
 
+### Review shared question updates
+
+Question shares arrive as pending imports. The recipient can compare their local version with the incoming question, answer, rationale, and decision rule before accepting it. Automatic import is available as a per-user preference and is off by default.
+
+![Side-by-side review of a shared question update](docs/screenshots/shared-question-diff.png)
+
 ## Download
 
 | Artifact | Purpose |
@@ -154,9 +160,28 @@ The packaged app starts loopback services for the UI, MCP, model provider, local
 | Model provider | `http://127.0.0.1:31418` |
 | Note storage | `http://127.0.0.1:31419` |
 
-### Sync relay
+### Vidmark Sync service
 
-The relay is a lightweight Bun WebSocket service backed by SQLite. For local development with Apple Container:
+Production sync runs on a DigitalOcean droplet at `159.223.136.163`. It is a small self-hosted service, not a DigitalOcean-managed collaboration product:
+
+| Component | Responsibility |
+| --- | --- |
+| Caddy container | Terminates HTTPS/WSS with automatic TLS and forwards requests to the private relay container |
+| Bun relay container | Maintains WebSocket connections, authenticates devices, performs directory lookup, queues offline deliveries, and serves public collaboration APIs |
+| SQLite Docker volume | Persists directory profiles, queued encrypted envelopes, course-link bundles, public course revisions, and discussions across container restarts |
+
+Only ports 80 and 443 are public. Private user-to-user payloads are encrypted on the sender's Mac and decrypted on the recipient's Mac; the service stores and forwards their encrypted envelopes. The relay can read the explicitly public or directory data listed in [Storage and privacy](#storage-and-privacy).
+
+The public endpoints are:
+
+```text
+WebSocket  wss://vidmark-159-223-136-163.sslip.io/ws
+Health     https://vidmark-159-223-136-163.sslip.io/health
+```
+
+`sslip.io` supplies a DNS name that resolves to the droplet's embedded IP address, allowing Caddy to obtain a normal TLS certificate. It does not host or proxy Vidmark data.
+
+For local relay development, the same relay can run with Apple Container:
 
 ```bash
 pnpm run relay:start
@@ -165,11 +190,7 @@ pnpm run relay:verify
 pnpm run relay:stop
 ```
 
-Production deployment assets are in [`relay/`](relay/). The default hosted endpoint is:
-
-```text
-wss://vidmark-159-223-136-163.sslip.io/ws
-```
+Production deployment assets are in [`relay/`](relay/).
 
 Run the protocol and agent integration checks with:
 
