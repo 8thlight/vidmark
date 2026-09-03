@@ -35,6 +35,21 @@ const openApp = () => {
   Bun.spawn(["/usr/bin/open", APP_URL], { stdout: "ignore", stderr: "ignore" });
 };
 
+const startWhisperWorker = (python: string, whisperScript: string, cwd: string) => {
+  try {
+    return Bun.spawn([python, whisperScript], {
+      cwd,
+      env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH ?? ""}`, HF_HUB_OFFLINE: "1" },
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`Voice notes are unavailable: the on-device Whisper worker could not start from ${python} (${reason}). Vidmark will continue without transcription.`);
+    return null;
+  }
+};
+
 async function startTranscriptionBridge() {
   Bun.serve({
     hostname: "127.0.0.1",
@@ -102,12 +117,7 @@ async function main() {
   const noteStoragePath = join(process.env.HOME ?? tmpdir(), "Library", "Application Support", "Vidmark", "notes");
   await mkdir(logDir, { recursive: true });
 
-  const worker = Bun.spawn([python, whisperScript], {
-    cwd: projectRoot || resourcesDir,
-    env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH ?? ""}`, HF_HUB_OFFLINE: "1" },
-    stdout: "inherit",
-    stderr: "inherit",
-  });
+  const worker = startWhisperWorker(python, whisperScript, projectRoot || resourcesDir);
   const transcription = Bun.spawn([process.execPath, "--transcription"], { stdout: "inherit", stderr: "inherit" });
   const mcp = await startVidmarkMcpServer(databasePath, { systemPromptsPath });
   const provider = startModelProviderServer(providerSettingsPath, databasePath, systemPromptsPath);
@@ -115,7 +125,7 @@ async function main() {
   const app = await startProdServer({ port: APP_PORT, host: "127.0.0.1", outDir: join(resourcesDir, "dist") });
 
   const shutdown = () => {
-    worker.kill("SIGTERM");
+    worker?.kill("SIGTERM");
     transcription.kill("SIGTERM");
     mcp.stop(true);
     provider.stop(true);
