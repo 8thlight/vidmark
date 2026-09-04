@@ -26,12 +26,14 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     private let notificationCenter = UNUserNotificationCenter.current()
     private let notificationCursorKey = "VidmarkDesktopNotificationCursor"
     private let notificationInstallationKey = "VidmarkDesktopNotificationInstallation"
+    private let authenticationController = VidmarkAuthenticationController()
     private lazy var updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     private var window: NSWindow!
     private var webView: WKWebView!
     private var statusLabel: NSTextField!
     private var progress: NSProgressIndicator!
     private var retryButton: NSButton!
+    private var loadingStack: NSStackView!
     private var readinessTimer: Timer?
     private var notificationTimer: Timer?
     private var readinessAttempts = 0
@@ -43,16 +45,18 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     private var serverLog: FileHandle?
     private var claudeExtensionURL: URL?
     private var isTerminating = false
+    private var isAuthenticated = false
+    private var isAuthenticating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         notificationCursor = UserDefaults.standard.integer(forKey: notificationCursorKey)
         notificationInstallationId = UserDefaults.standard.string(forKey: notificationInstallationKey) ?? ""
         buildMenu()
         buildWindow()
+        observeWorkspaceSecurityEvents()
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            self?.launchServer()
-            self?.waitForServer()
+            self?.beginAuthentication()
         }
     }
 
@@ -60,6 +64,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { window.makeKeyAndOrderFront(nil) }
+        if !isAuthenticated { beginAuthentication() }
         return true
     }
 
@@ -67,6 +72,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         isTerminating = true
         readinessTimer?.invalidate()
         notificationTimer?.invalidate()
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         NSApp.dockTile.badgeLabel = nil
         stopServer()
     }
@@ -82,6 +88,8 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         appMenu.addItem(checkForUpdatesItem)
         appMenu.addItem(withTitle: "Reveal Claude Desktop Extension…", action: #selector(revealClaudeExtension), keyEquivalent: "")
         appMenu.addItem(withTitle: "Notification Settings…", action: #selector(openNotificationSettings), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Security Settings…", action: #selector(openSecuritySettings), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Lock Vidmark", action: #selector(lockVidmark), keyEquivalent: "l")
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit Vidmark", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
@@ -115,6 +123,80 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     @objc private func openNotificationSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    @objc private func openSecuritySettings() {
+        guard isAuthenticated else { beginAuthentication(); return }
+        authenticationController.changeAuthentication { success in
+            if success {
+                let alert = NSAlert()
+                alert.messageText = "Vidmark security updated"
+                alert.informativeText = "Vidmark will use \(self.authenticationController.modeDescription) the next time it is locked or opened."
+                alert.runModal()
+            }
+        }
+    }
+
+    @objc private func lockVidmark() {
+        lockApplication()
+    }
+
+    private func observeWorkspaceSecurityEvents() {
+        let center = NSWorkspace.shared.notificationCenter
+        center.addObserver(self, selector: #selector(handleWorkspaceLock), name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        center.addObserver(self, selector: #selector(handleWorkspaceLock), name: NSWorkspace.screensDidSleepNotification, object: nil)
+    }
+
+    @objc private func handleWorkspaceLock() {
+        lockApplication()
+    }
+
+    private func beginAuthentication() {
+        guard !isAuthenticated, !isAuthenticating else { return }
+        isAuthenticating = true
+        showLockedState(message: authenticationController.mode == nil ? "Choose how to protect Vidmark…" : "Vidmark is locked")
+        authenticationController.authenticateOrConfigure { [weak self] success in
+            guard let self else { return }
+            self.isAuthenticating = false
+            if success { self.unlockAndStart() }
+            else if !self.isTerminating { self.showLockedState(message: "Vidmark is locked") }
+        }
+    }
+
+    private func unlockAndStart() {
+        isAuthenticated = true
+        retryButton.isHidden = true
+        retryButton.title = "Try Again"
+        progress.isHidden = false
+        progress.startAnimation(nil)
+        statusLabel.stringValue = "Starting Vidmark…"
+        launchServer()
+        waitForServer()
+    }
+
+    private func lockApplication() {
+        guard isAuthenticated || serverProcess?.isRunning == true else { return }
+        isAuthenticated = false
+        readinessTimer?.invalidate()
+        readinessTimer = nil
+        notificationTimer?.invalidate()
+        notificationTimer = nil
+        NSApp.dockTile.badgeLabel = nil
+        stopServer()
+        webView.stopLoading()
+        webView.load(URLRequest(url: URL(string: "about:blank")!))
+        showLockedState(message: "Vidmark is locked")
+    }
+
+    private func showLockedState(message: String) {
+        webView.isHidden = true
+        loadingStack.isHidden = false
+        progress.stopAnimation(nil)
+        progress.isHidden = true
+        statusLabel.stringValue = message
+        retryButton.title = "Unlock Vidmark"
+        retryButton.isHidden = false
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func installBundledClaudeExtension() {
@@ -179,7 +261,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         retryButton.bezelStyle = .rounded
         retryButton.isHidden = true
 
-        let loadingStack = NSStackView(views: [progress, statusLabel, retryButton])
+        loadingStack = NSStackView(views: [progress, statusLabel, retryButton])
         loadingStack.orientation = .vertical
         loadingStack.alignment = .centerX
         loadingStack.spacing = 12
@@ -238,7 +320,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         process.standardError = serverLog
         process.terminationHandler = { [weak self] process in
             DispatchQueue.main.async {
-                guard let self, !self.isTerminating, self.webView.isHidden else { return }
+                guard let self, !self.isTerminating, self.isAuthenticated, !self.webView.isHidden else { return }
                 self.showStartupError("The local server stopped unexpectedly (code \(process.terminationStatus)).")
             }
         }
@@ -279,7 +361,12 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     @objc private func retryStartup() {
+        if !isAuthenticated {
+            beginAuthentication()
+            return
+        }
         retryButton.isHidden = true
+        retryButton.title = "Try Again"
         progress.isHidden = false
         progress.startAnimation(nil)
         statusLabel.stringValue = "Restarting Vidmark…"
@@ -371,6 +458,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard isAuthenticated, webView.url?.scheme != "about" else { return }
         installBundledClaudeExtension()
         webView.isHidden = false
         progress.superview?.isHidden = true
@@ -419,8 +507,13 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 }
 
-let application = NSApplication.shared
-let delegate = VidmarkAppDelegate()
-application.delegate = delegate
-application.setActivationPolicy(.regular)
-application.run()
+@main
+struct VidmarkApplication {
+    static func main() {
+        let application = NSApplication.shared
+        let delegate = VidmarkAppDelegate()
+        application.delegate = delegate
+        application.setActivationPolicy(.regular)
+        application.run()
+    }
+}
