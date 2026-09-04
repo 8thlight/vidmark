@@ -34,7 +34,7 @@ export function ProfileOnboarding({ profile, required, onSaved, onClose }: { pro
   return <div className="profile-overlay" role="presentation"><section className="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-title">
     {!required && <button className="profile-close" type="button" aria-label="Close profile editor" onClick={onClose}><X aria-hidden="true" /></button>}
     <form onSubmit={submit}>
-      <div className="profile-fields"><header><h1 id="profile-title">{profile ? "Edit your profile" : "Set up your Vidmark profile"}</h1><p>{profile ? "Update how you appear to other Vidmark learners." : "This one-time profile setup is separate from unlocking the app."}</p></header>
+      <div className="profile-fields"><header><h1 id="profile-title">{profile ? "Edit your profile" : "Welcome to Vidmark"}</h1><p>Your study identity connects you with other Vidmark learners.</p></header>
         <label>Name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Enter your full name" autoComplete="name" /></label>
         <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Enter your email address" autoComplete="email" /></label>
         <p className="profile-privacy"><LockKeyhole aria-hidden="true" />Your name, email, and avatar are searchable in the Vidmark employee directory. Private course content is shared only when you choose a recipient or create a link.</p>
