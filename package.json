@@ -1,6 +1,6 @@
 {
   "name": "vidmark",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "packageManager": "pnpm@11.19.0",
   "engines": {
@@ -13,6 +13,7 @@
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log .tools/bun/bin/bun node_modules/vinext/dist/cli.js build",
     "package:mac": "zsh scripts/build-macos-app.sh",
     "package:dmg": "zsh scripts/build-macos-dmg.sh",
+    "release:mac": "zsh scripts/publish-macos-update.sh",
     "package:dxt": "zsh scripts/build-dxt.sh",
     "relay:start": "zsh scripts/relay-apple-container.sh start",
     "relay:stop": "zsh scripts/relay-apple-container.sh stop",

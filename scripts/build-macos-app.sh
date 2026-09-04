@@ -9,6 +9,8 @@ VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT
 MCPB="$ROOT/releases/Vidmark-$VERSION.mcpb"
 ICON_SOURCE="$ROOT/public/vidmark-mark.png"
 ICONSET="$ROOT/build/Vidmark.iconset"
+SPARKLE_VERSION="2.9.6"
+SPARKLE_HOME="$ROOT/.tools/sparkle/$SPARKLE_VERSION"
 
 [[ -f "$ICON_SOURCE" ]] || { print "App mark is missing at $ICON_SOURCE"; exit 1; }
 
@@ -23,10 +25,13 @@ if /usr/bin/curl -fsS --max-time 1 http://localhost:3010/ >/dev/null 2>&1; then
   exit 1
 fi
 
-print "[1/7] Building the bundled Claude Desktop extension…"
+print "[1/8] Preparing the signed update framework…"
+/bin/zsh "$ROOT/scripts/prepare-sparkle.sh" >/dev/null
+
+print "[2/8] Building the bundled Claude Desktop extension…"
 /bin/zsh "$ROOT/scripts/build-dxt.sh"
 
-print "[2/7] Building optimized Vinext assets with Bun…"
+print "[3/8] Building optimized Vinext assets with Bun…"
 cd "$ROOT"
 WRANGLER_LOG_PATH=.wrangler/wrangler.log "$BUN" "$ROOT/node_modules/vinext/dist/cli.js" build
 
@@ -36,23 +41,27 @@ case "$APP" in
 esac
 
 rm -rf "$APP" "$ICONSET"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$ICONSET"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks" "$ICONSET"
 
-print "[3/7] Compiling the standalone Bun server…"
+print "[4/8] Compiling the standalone Bun server…"
 "$BUN" build "$ROOT/scripts/packaged-server.ts" --compile --target=bun-darwin-arm64 --minify --sourcemap --outfile "$APP/Contents/MacOS/VidmarkServer"
 
-print "[4/7] Compiling the native shell and Apple Speech helper…"
-/usr/bin/xcrun swiftc "$ROOT/packaging/VidmarkApp.swift" -O -target arm64-apple-macos13.0 -framework AppKit -framework WebKit -o "$APP/Contents/MacOS/Vidmark"
+print "[5/8] Compiling the native shell and Apple Speech helper…"
+/usr/bin/xcrun swiftc "$ROOT/packaging/VidmarkApp.swift" -O -target arm64-apple-macos13.0 \
+  -F "$SPARKLE_HOME" -framework Sparkle -framework AppKit -framework WebKit \
+  -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+  -o "$APP/Contents/MacOS/Vidmark"
 /bin/zsh "$ROOT/scripts/build-native-transcriber.sh" "$APP/Contents/MacOS/VidmarkTranscriber"
 
-print "[5/7] Packaging production assets and the Claude extension…"
+print "[6/8] Packaging production assets, Sparkle, and the Claude extension…"
 /usr/bin/ditto "$ROOT/dist" "$APP/Contents/Resources/dist"
+/usr/bin/ditto "$SPARKLE_HOME/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 /bin/mkdir -p "$APP/Contents/Resources/ClaudeDesktop"
 /usr/bin/ditto "$MCPB" "$APP/Contents/Resources/ClaudeDesktop/Vidmark.mcpb"
 /bin/cp "$ROOT/packaging/Info.plist" "$APP/Contents/Info.plist"
 /bin/chmod +x "$APP/Contents/MacOS/Vidmark" "$APP/Contents/MacOS/VidmarkServer" "$APP/Contents/MacOS/VidmarkTranscriber"
 
-print "[6/7] Creating the macOS icon…"
+print "[7/8] Creating the macOS icon…"
 for size in 16 32 128 256 512; do
   /usr/bin/sips -z "$size" "$size" "$ICON_SOURCE" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
   double=$((size * 2))
@@ -61,7 +70,7 @@ done
 /usr/bin/iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Vidmark.icns"
 rm -rf "$ICONSET"
 
-print "[7/7] Ad-hoc signing the local app bundle…"
+print "[8/8] Ad-hoc signing the local app bundle…"
 /usr/bin/codesign --force --deep --sign - "$APP"
 
 print ""

@@ -29,11 +29,13 @@ Question shares arrive as pending imports. The recipient can compare their local
 
 | Artifact | Purpose |
 | --- | --- |
-| [Vidmark 1.1.0 for macOS](releases/Vidmark-1.1.0.dmg) | Complete desktop application |
-| [Claude Desktop MCP Bundle](releases/Vidmark-1.1.0.mcpb) | Preferred Claude Desktop extension |
-| [Claude Desktop DXT build](releases/Vidmark-1.1.0.dxt) | Compatibility package for Claude versions that request `.dxt` |
+| [Vidmark 1.2.0 for macOS](releases/Vidmark-1.2.0.dmg) | Complete desktop application |
+| [Claude Desktop MCP Bundle](releases/Vidmark-1.2.0.mcpb) | Preferred Claude Desktop extension |
+| [Claude Desktop DXT build](releases/Vidmark-1.2.0.dxt) | Compatibility package for Claude versions that request `.dxt` |
 
 Open the disk image, drag Vidmark to Applications, and launch it. The repository build is ad-hoc signed rather than Apple-notarized, so the first launch may require Control-clicking Vidmark, choosing **Open**, and confirming.
+
+Vidmark checks its signed HTTPS update feed automatically and installs verified updates in the background. Choose **Vidmark → Check for Updates…** to check immediately.
 
 ## Using Vidmark
 

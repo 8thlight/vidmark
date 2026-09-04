@@ -1,4 +1,5 @@
 import AppKit
+import Sparkle
 import UserNotifications
 import WebKit
 
@@ -25,6 +26,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     private let notificationCenter = UNUserNotificationCenter.current()
     private let notificationCursorKey = "VidmarkDesktopNotificationCursor"
     private let notificationInstallationKey = "VidmarkDesktopNotificationInstallation"
+    private lazy var updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     private var window: NSWindow!
     private var webView: WKWebView!
     private var statusLabel: NSTextField!
@@ -75,6 +77,9 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Vidmark", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let checkForUpdatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
+        checkForUpdatesItem.target = updaterController
+        appMenu.addItem(checkForUpdatesItem)
         appMenu.addItem(withTitle: "Reveal Claude Desktop Extension…", action: #selector(revealClaudeExtension), keyEquivalent: "")
         appMenu.addItem(withTitle: "Notification Settings…", action: #selector(openNotificationSettings), keyEquivalent: "")
         appMenu.addItem(NSMenuItem.separator())
