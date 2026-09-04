@@ -107,6 +107,7 @@ export function StudyPeers({ open, initialTab, profile, courseId, courseTitle, v
 
   const openReview = (suggestion: QuestionSuggestion) => run(async () => { setReviewing(suggestion); setCurrentQuestion(suggestion.questionId ? await getStoredCourseQuestion(suggestion.courseId, suggestion.questionId) : null); }, "Could not load your question version.");
   const decideQuestion = (suggestion: QuestionSuggestion, decision: "accepted" | "rejected") => run(async () => { await reviewSuggestion(suggestion.id, decision); if (decision === "accepted") onQuestionsChanged(); setReviewing(null); setStatus(decision === "accepted" ? "Question imported into your library." : "Question update rejected."); await refreshCore(); }, "Could not review the question.");
+  const dismissDuplicateQuestion = (suggestion: QuestionSuggestion) => run(async () => { await reviewSuggestion(suggestion.id, "rejected"); setReviewing(null); setStatus("Duplicate share dismissed; your question was already current."); await refreshCore(); }, "Could not dismiss the duplicate question.");
   const updatePreferences = (next: SyncPreferences) => run(async () => { setPreferences(await saveSyncPreferences(next)); }, "Could not save sync preferences.");
   const shareSelectedQuestion = (user: DirectoryUser) => run(async () => { const result = await shareCourseQuestion(courseId, selectedQuestionId, user); setStatus(`Question shared securely with ${user.profile.name} across ${result.delivered.length} registered device${result.delivered.length === 1 ? "" : "s"}.`); }, "Could not share the question.");
   const shareToUser = (user: DirectoryUser) => run(async () => { await shareCourseWithUser(courseId, user); setStatus(`Course invitation added to ${user.profile.name}’s Vidmark inbox. No email was sent.`); }, "Could not share the course.");
@@ -141,7 +142,7 @@ export function StudyPeers({ open, initialTab, profile, courseId, courseTitle, v
       {tab === "people" ? <PeoplePanel profile={profile} syncOnline={relayConnected} questions={questions} selectedQuestionId={selectedQuestionId} suggestions={suggestions} preferences={preferences} loading={loading} onEditProfile={onEditProfile} onSelectedQuestion={setSelectedQuestionId} onShareQuestion={shareSelectedQuestion} onPreferences={updatePreferences} onQuestionDecision={decideQuestion} onQuestionReview={openReview} /> : null}
       {status ? <div className="peer-status" role="status">{status}</div> : null}
     </aside> : null}
-    {reviewing ? <QuestionDiffReview suggestion={reviewing} current={currentQuestion} preferences={preferences} loading={loading} onClose={() => setReviewing(null)} onImport={() => void decideQuestion(reviewing, "accepted")} onPreferencesChange={(next) => void updatePreferences(next)} /> : null}
+    {reviewing ? <QuestionDiffReview suggestion={reviewing} current={currentQuestion} preferences={preferences} loading={loading} onClose={() => setReviewing(null)} onDismiss={() => void dismissDuplicateQuestion(reviewing)} onImport={() => void decideQuestion(reviewing, "accepted")} onPreferencesChange={(next) => void updatePreferences(next)} /> : null}
   </>;
 }
 

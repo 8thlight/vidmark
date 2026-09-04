@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { questionPayloadsEqual } from "../app/question-diff";
 import type { CourseCommentRecord, ProfileRecord, QuestionRecord, SharedProfile, SuggestionRecord, VidmarkDatabase } from "./vidmark-db";
 
 type DeviceIdentity = { id: string; publicKey: string; privateKey: string; signingPublicKey: string; signingPrivateKey: string; fingerprint: string };
@@ -323,6 +324,7 @@ export class VidmarkSyncService {
   private applySharedEvent(event: DirectShareEvent, relayEnvelope: RelayEnvelope) {
     if (event.type === "question") {
       const existing = this.store.getQuestion(event.courseId, event.question.id);
+      if (existing && questionPayloadsEqual(existing.payload, event.question.payload)) return;
       const autoImport = this.store.getSyncPreferences().autoImportQuestions;
       const suggestion = this.store.createSuggestion({
         id: event.eventId,

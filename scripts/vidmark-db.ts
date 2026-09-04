@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import bundledConceptGraph from "../data/concept-graph.json";
 import questionBank from "../data/question-bank.json";
 import { validateConceptGraph, type ConceptGraph } from "../app/concept-graph-types";
+import { applyQuestionPatch, questionPayloadsEqual } from "../app/question-diff";
 
 export const STARTER_COURSE_ID = "reDRM0tqhNs";
 export const PUBLIC_RELAY_URL = "wss://vidmark-159-223-136-163.sslip.io/ws";
@@ -150,6 +151,7 @@ export class VidmarkDatabase {
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
     this.migrate();
     this.seedBundledQuestionBank();
+    this.dismissRedundantQuestionSuggestions();
   }
 
   close() { this.db.close(); }
@@ -334,6 +336,24 @@ export class VidmarkDatabase {
     this.db.transaction(() => {
       questionBank.questions.forEach((question, index) => insert.run(STARTER_COURSE_ID, question.id, index, json(question), timestamp, timestamp));
       this.db.query("INSERT OR REPLACE INTO app_meta(key,value) VALUES ('question_bank_metadata', ?)").run(json({ title: questionBank.title, disclaimer: questionBank.disclaimer, domains: questionBank.domains, sections: questionBank.sections }));
+    })();
+  }
+
+  private dismissRedundantQuestionSuggestions() {
+    const pending = this.db.query("SELECT id,course_id,question_id,proposed_patch_json FROM suggestions WHERE status='pending' AND kind='update' AND question_id IS NOT NULL").all() as Array<Record<string, unknown>>;
+    const timestamp = now();
+    this.db.transaction(() => {
+      for (const row of pending) {
+        const current = this.getQuestion(String(row.course_id), String(row.question_id));
+        if (!current) continue;
+        const patch = parseJson<Record<string, unknown>>(row.proposed_patch_json, {});
+        const proposed = applyQuestionPatch(current.payload, patch);
+        if (!questionPayloadsEqual(current.payload, proposed)) continue;
+        const id = String(row.id);
+        this.db.query("UPDATE suggestions SET status='rejected',review_note=?,reviewed_at=?,updated_at=? WHERE id=?")
+          .run("Automatically dismissed because the incoming question matches the local version.", timestamp, timestamp, id);
+        this.db.query("DELETE FROM desktop_notifications WHERE kind='question' AND entity_id=?").run(id);
+      }
     })();
   }
 
