@@ -1,6 +1,6 @@
 "use client";
 
-/* The complete locally generated transcript is rendered directly below each player. */
+/* Locally generated transcripts are rendered directly below each player when available. */
 /* eslint-disable jsx-a11y/media-has-caption */
 
 import { ChangeEvent, useEffect, useRef, useState } from "react";
@@ -45,7 +45,7 @@ export function VoiceNote({ note, compact = false }: { note: StudyNote; compact?
       <div className="voice-track-timeline"><input type="range" min="0" max={Math.max(duration, 0)} step="0.05" value={Math.min(currentTime, duration || 0)} onChange={seek} disabled={!audioUrl || !duration} aria-label={`Seek ${note.chapterTitle} voice note`} /><span>{formatAudioTime(currentTime)} / {formatAudioTime(duration)}</span></div>
     </div>
     {!audioUrl && <p className="voice-audio-missing">Audio was not retained for this older voice note.</p>}
-    <details open={!compact}><summary><FileText aria-hidden="true" /> Transcript <ChevronDown aria-hidden="true" /></summary><p>{note.text}</p></details>
+    <details open={!compact}><summary><FileText aria-hidden="true" /> {note.text ? "Transcript" : "Transcript unavailable"} <ChevronDown aria-hidden="true" /></summary><p>{note.text || "This recording was saved without a transcript because Apple on-device speech recognition was unavailable or did not detect speech."}</p></details>
   </div>;
 }
 

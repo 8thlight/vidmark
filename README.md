@@ -12,7 +12,7 @@ Vidmark is a local-first macOS study workspace with an integrated MCP server. It
 
 - Build complete courses from YouTube videos with Claude or another MCP-capable agent.
 - Acquire available public YouTube captions when a transcript is not supplied.
-- Study with timestamped chapters, transcript search, text and voice notes, concept graphs, practice questions, and exams.
+- Study with timestamped chapters, transcript search, text and voice notes, concept graphs, practice questions, and exams. Voice notes use Apple Speech on-device when available.
 - Customize the global model instructions Vidmark uses for course building and specialist agents.
 - Find registered Vidmark users by name or email and share courses, questions, answers, suggestions, and notes.
 - Review incoming question changes in a side-by-side diff before importing them. Automatic question import is optional and disabled by default.
@@ -120,7 +120,7 @@ Private study data is stored at:
 ~/Library/Application Support/Vidmark/vidmark.sqlite
 ```
 
-System-prompt overrides are stored locally in `system-prompts.json`. Voice recordings remain on the Mac under the Vidmark application-support directory.
+System-prompt overrides are stored locally in `system-prompts.json`. Voice recordings remain on the Mac under the Vidmark application-support directory. Vidmark has no cloud-transcription fallback: Apple Speech processes recordings on-device, and recordings remain saveable without a transcript when local recognition is unavailable. macOS may download Apple's language model before first use, but does not upload the recording for recognition.
 
 | Boundary | Data |
 | --- | --- |

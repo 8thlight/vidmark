@@ -8,7 +8,8 @@
   },
   "scripts": {
     "dev": ".tools/bun/bin/bun scripts/local-dev.mjs",
-    "notes:transcribe": "node scripts/transcription-server.mjs",
+    "build:transcriber": "zsh scripts/build-native-transcriber.sh",
+    "notes:transcribe": ".tools/bun/bin/bun scripts/transcription-server.mjs",
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log .tools/bun/bin/bun node_modules/vinext/dist/cli.js build",
     "package:mac": "zsh scripts/build-macos-app.sh",
     "package:dmg": "zsh scripts/build-macos-dmg.sh",

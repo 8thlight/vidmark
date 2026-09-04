@@ -41,17 +41,16 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$ICONSET"
 print "[3/7] Compiling the standalone Bun server…"
 "$BUN" build "$ROOT/scripts/packaged-server.ts" --compile --target=bun-darwin-arm64 --minify --sourcemap --outfile "$APP/Contents/MacOS/VidmarkServer"
 
-print "[4/7] Compiling the native Swift + WKWebView shell…"
+print "[4/7] Compiling the native shell and Apple Speech helper…"
 /usr/bin/xcrun swiftc "$ROOT/packaging/VidmarkApp.swift" -O -target arm64-apple-macos13.0 -framework AppKit -framework WebKit -o "$APP/Contents/MacOS/Vidmark"
+/bin/zsh "$ROOT/scripts/build-native-transcriber.sh" "$APP/Contents/MacOS/VidmarkTranscriber"
 
-print "[5/7] Packaging production assets, the Claude extension, and local transcription support…"
+print "[5/7] Packaging production assets and the Claude extension…"
 /usr/bin/ditto "$ROOT/dist" "$APP/Contents/Resources/dist"
 /bin/mkdir -p "$APP/Contents/Resources/ClaudeDesktop"
 /usr/bin/ditto "$MCPB" "$APP/Contents/Resources/ClaudeDesktop/Vidmark.mcpb"
-/bin/cp "$ROOT/scripts/whisper-worker.py" "$APP/Contents/Resources/whisper-worker.py"
 /bin/cp "$ROOT/packaging/Info.plist" "$APP/Contents/Info.plist"
-print -r -- "$ROOT" > "$APP/Contents/Resources/vidmark-project-path"
-/bin/chmod +x "$APP/Contents/MacOS/Vidmark" "$APP/Contents/MacOS/VidmarkServer"
+/bin/chmod +x "$APP/Contents/MacOS/Vidmark" "$APP/Contents/MacOS/VidmarkServer" "$APP/Contents/MacOS/VidmarkTranscriber"
 
 print "[6/7] Creating the macOS icon…"
 for size in 16 32 128 256 512; do

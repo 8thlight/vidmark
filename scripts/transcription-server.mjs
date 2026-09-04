@@ -1,11 +1,12 @@
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 
 const port = Number(process.env.VIDMARK_TRANSCRIPTION_PORT ?? 31415);
-const whisperWorker = process.env.VIDMARK_WHISPER_WORKER ?? "http://127.0.0.1:31416";
+const transcriberPath = process.env.VIDMARK_TRANSCRIBER_PATH ?? join(process.cwd(), "build", "VidmarkTranscriber");
 const allowedOrigins = new Set(["http://localhost:3010", "http://127.0.0.1:3010"]);
 
 const sendJson = (response, status, payload, origin) => {
@@ -18,24 +19,38 @@ const sendJson = (response, status, payload, origin) => {
   response.end(JSON.stringify(payload));
 };
 
-const runTranscription = async (audioPath, locale) => {
-  const language = locale.split(/[-_]/)[0] || "en";
-  const response = await fetch(`${whisperWorker}/transcribe`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ audioPath, language }),
-    signal: AbortSignal.timeout(120_000),
+const runTranscriber = (arguments_) => new Promise((resolve, reject) => {
+  const child = spawn(transcriberPath, arguments_, { stdio: ["ignore", "pipe", "pipe"] });
+  let output = "";
+  let error = "";
+  const timeout = setTimeout(() => {
+    child.kill("SIGTERM");
+    reject(new Error("Apple on-device transcription timed out. The recording can still be saved without a transcript."));
+  }, 120_000);
+  child.stdout.on("data", (chunk) => { output += chunk; });
+  child.stderr.on("data", (chunk) => { error += chunk; });
+  child.on("error", () => {
+    clearTimeout(timeout);
+    reject(new Error("Apple on-device transcription is unavailable. The recording can still be saved without a transcript."));
   });
-  const result = await response.json();
-  if (!response.ok || !result.transcript) throw new Error(result.error ?? "Local transcription did not return text.");
-  return result.transcript;
-};
+  child.on("exit", (code) => {
+    clearTimeout(timeout);
+    if (code !== 0) return reject(new Error(error.trim() || "Apple on-device transcription failed. The recording can still be saved without a transcript."));
+    try { resolve(JSON.parse(output)); }
+    catch { reject(new Error("Apple on-device transcription returned an invalid response. The recording can still be saved without a transcript.")); }
+  });
+});
 
 createServer(async (request, response) => {
   const origin = request.headers.origin;
   if (request.method === "OPTIONS") return sendJson(response, 204, {}, origin);
   if (request.method === "GET" && request.url === "/health") {
-    return sendJson(response, 200, { ok: true, engine: "MLX Whisper Turbo (on-device)" }, origin);
+    try {
+      const health = await runTranscriber(["--health", "en_US"]);
+      return sendJson(response, 200, health, origin);
+    } catch (error) {
+      return sendJson(response, 200, { ok: true, available: false, engine: "Apple Speech", mode: "on-device-only", reason: error instanceof Error ? error.message : "Apple on-device transcription is unavailable." }, origin);
+    }
   }
   if (request.method !== "POST" || request.url !== "/transcribe") return sendJson(response, 404, { error: "Not found" }, origin);
 
@@ -56,16 +71,17 @@ createServer(async (request, response) => {
     directory = await mkdtemp(join(tmpdir(), "vidmark-note-"));
     const audioPath = join(directory, "voice-note.wav");
     await writeFile(audioPath, bytes);
-    const transcript = await runTranscription(audioPath, locale);
-    return sendJson(response, 200, { transcript }, origin);
+    const result = await runTranscriber([audioPath, locale]);
+    if (!result.transcript) throw new Error("Apple on-device transcription did not return text. The recording can still be saved without a transcript.");
+    return sendJson(response, 200, result, origin);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Local transcription failed.";
-    return sendJson(response, 500, {
+    return sendJson(response, 503, {
       error: message,
     }, origin);
   } finally {
     if (directory) await rm(directory, { recursive: true, force: true });
   }
 }).listen(port, "127.0.0.1", () => {
-  console.log(`Vidmark local transcription is listening at http://127.0.0.1:${port}`);
+  console.log(`Vidmark Apple on-device transcription is listening at http://127.0.0.1:${port}`);
 });

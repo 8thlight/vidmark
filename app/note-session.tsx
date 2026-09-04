@@ -30,7 +30,6 @@ export function NoteSession({ open, onClose, notes, courseId, chapterId, chapter
   const [saveSucceeded, setSaveSucceeded] = useState(false);
   const [saveLocation, setSaveLocation] = useState<"disk" | "browser">("disk");
   const [sharingNoteId, setSharingNoteId] = useState<string | null>(null);
-  const [hasVoiceTranscript, setHasVoiceTranscript] = useState(false);
   const [voiceAudio, setVoiceAudio] = useState<Blob | null>(null);
   const [voiceDuration, setVoiceDuration] = useState<number | undefined>();
   const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
@@ -44,10 +43,7 @@ export function NoteSession({ open, onClose, notes, courseId, chapterId, chapter
   const samples = useRef<Float32Array[]>([]);
   const waveform = useRef<HTMLCanvasElement | null>(null);
   const animationFrame = useRef<number | null>(null);
-  const liveTranscriptionTimer = useRef<number | null>(null);
-  const liveTranscriptionTask = useRef<Promise<void> | null>(null);
   const voiceDraftStart = useRef(0);
-  const voiceSession = useRef(0);
   const saveSuccessTimer = useRef<number | null>(null);
 
   const refreshMicrophones = async () => {
@@ -81,7 +77,7 @@ export function NoteSession({ open, onClose, notes, courseId, chapterId, chapter
     if (analyser.current) animationFrame.current = requestAnimationFrame(drawWaveform);
   };
 
-  useEffect(() => () => { stream.current?.getTracks().forEach((track) => track.stop()); audioContext.current?.close(); if (liveTranscriptionTimer.current) window.clearInterval(liveTranscriptionTimer.current); if (saveSuccessTimer.current) window.clearTimeout(saveSuccessTimer.current); }, []);
+  useEffect(() => () => { stream.current?.getTracks().forEach((track) => track.stop()); audioContext.current?.close(); if (saveSuccessTimer.current) window.clearTimeout(saveSuccessTimer.current); }, []);
   useEffect(() => {
     const mediaDevices = navigator.mediaDevices;
     if (!mediaDevices) return;
@@ -97,22 +93,6 @@ export function NoteSession({ open, onClose, notes, courseId, chapterId, chapter
     const result = await response.json() as { transcript?: string; error?: string };
     if (!response.ok || !result.transcript) throw new Error(result.error ?? "No transcript returned.");
     return result.transcript.trim();
-  };
-
-  const transcribeLiveChunk = async (session: number, sampleRate: number) => {
-    if (session !== voiceSession.current) return;
-    const recordingSoFar = samples.current.slice();
-    const sampleCount = recordingSoFar.reduce((total, sample) => total + sample.length, 0);
-    if (sampleCount < sampleRate * 0.8) return;
-    try {
-      const transcript = await requestTranscript(recordingSoFar, sampleRate);
-      if (session !== voiceSession.current) return;
-      setDraft((current) => `${current.slice(0, voiceDraftStart.current)}${voiceDraftStart.current ? "\n\n" : ""}${transcript}`);
-      setHasVoiceTranscript(true);
-      setStatus("Listening… Whisper Turbo is refining the note live.");
-    } catch {
-      if (session === voiceSession.current) setStatus("Listening… the current phrase will be completed when you stop recording.");
-    }
   };
 
   const startRecording = async () => {
@@ -135,16 +115,11 @@ export function NoteSession({ open, onClose, notes, courseId, chapterId, chapter
       samples.current = [];
       setVoiceAudio(null); setVoiceDuration(undefined);
       voiceDraftStart.current = draft.length;
-      const session = voiceSession.current + 1;
-      voiceSession.current = session;
       recorder.onaudioprocess = (event) => samples.current.push(new Float32Array(event.inputBuffer.getChannelData(0)));
       inputSource.connect(recorder); inputSource.connect(waveformAnalyser); recorder.connect(silentGain); silentGain.connect(context.destination);
       audioContext.current = context; stream.current = input; source.current = inputSource; processor.current = recorder; mutedOutput.current = silentGain; analyser.current = waveformAnalyser;
       drawWaveform();
-      liveTranscriptionTimer.current = window.setInterval(() => {
-        if (!liveTranscriptionTask.current) liveTranscriptionTask.current = transcribeLiveChunk(session, context.sampleRate).finally(() => { liveTranscriptionTask.current = null; });
-      }, 800);
-      setRecording(true); setStatus("Listening… Whisper Turbo will add your words here live.");
+      setRecording(true); setStatus("Listening… Apple Speech will transcribe on this Mac after you stop.");
     } catch {
       setStatus("Microphone access is required to record a voice note.");
     }
@@ -152,10 +127,7 @@ export function NoteSession({ open, onClose, notes, courseId, chapterId, chapter
 
   const stopAndTranscribe = async () => {
     if (!audioContext.current) return;
-    voiceSession.current += 1;
-    if (liveTranscriptionTimer.current) window.clearInterval(liveTranscriptionTimer.current);
-    liveTranscriptionTimer.current = null;
-    setRecording(false); setTranscribing(true); setStatus("Transcribing with Whisper Turbo on this Mac…");
+    setRecording(false); setTranscribing(true); setStatus("Transcribing with Apple Speech on this Mac…");
     processor.current?.disconnect(); source.current?.disconnect(); mutedOutput.current?.disconnect(); stream.current?.getTracks().forEach((track) => track.stop());
     analyser.current?.disconnect(); analyser.current = null;
     if (animationFrame.current) cancelAnimationFrame(animationFrame.current);
@@ -167,13 +139,11 @@ export function NoteSession({ open, onClose, notes, courseId, chapterId, chapter
     await audioContext.current.close();
     audioContext.current = null; stream.current = null;
     try {
-      await liveTranscriptionTask.current;
       const transcript = await requestTranscript(recordedSamples, sampleRate);
       setDraft((current) => `${current.slice(0, voiceDraftStart.current)}${voiceDraftStart.current ? "\n\n" : ""}${transcript}`);
-      setHasVoiceTranscript(true);
-      setStatus("Transcribed with Whisper Turbo locally. Review, edit, then save.");
+      setStatus("Transcribed with Apple Speech on-device. Review, edit, then save.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Transcription failed.");
+      setStatus(error instanceof Error ? error.message : "On-device transcription failed. The recording can still be saved without a transcript.");
     } finally {
       setTranscribing(false);
     }
@@ -182,13 +152,13 @@ export function NoteSession({ open, onClose, notes, courseId, chapterId, chapter
   const save = async (event: FormEvent) => {
     event.preventDefault();
     const text = draft.trim();
-    if (!text || recording || transcribing || saving) return;
-    const note: StudyNote = { id: crypto.randomUUID(), text, updatedAt: Date.now(), source: hasVoiceTranscript ? "voice" : "text", courseId, chapterId, chapterTitle, audio: hasVoiceTranscript ? voiceAudio ?? undefined : undefined, durationSeconds: hasVoiceTranscript ? voiceDuration : undefined };
+    if ((!text && !voiceAudio) || recording || transcribing || saving) return;
+    const note: StudyNote = { id: crypto.randomUUID(), text, updatedAt: Date.now(), source: voiceAudio ? "voice" : "text", courseId, chapterId, chapterTitle, audio: voiceAudio ?? undefined, durationSeconds: voiceAudio ? voiceDuration : undefined };
     setSaving(true);
     try {
       const result = await writeNote(note);
       await onNotesChanged();
-      setDraft(""); setHasVoiceTranscript(false); setVoiceAudio(null); setVoiceDuration(undefined); setSaveLocation(result.storage);
+      setDraft(""); setVoiceAudio(null); setVoiceDuration(undefined); setSaveLocation(result.storage);
       setStatus(result.storage === "disk" ? "Saved to ~/Library/Application Support/Vidmark/notes." : "The disk service was unavailable, so this note was saved in browser storage.");
       setSaveSucceeded(true);
       if (saveSuccessTimer.current) window.clearTimeout(saveSuccessTimer.current);
@@ -208,7 +178,7 @@ export function NoteSession({ open, onClose, notes, courseId, chapterId, chapter
   return <dialog open className="modal-backdrop note-modal-backdrop" aria-label="Note session"><section className="note-session">
     <header className="note-session-head"><div><span>ALL NOTES · {notes.length}</span><h2>Capture the thought while it is fresh.</h2></div><button type="button" aria-label="Close note session" onClick={closeSession}><X aria-hidden="true" /></button></header>
     <p className="note-chapter-target">Saving new notes to <b>{chapterTitle}</b>.</p>
-    <form onSubmit={save} className="note-composer"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Type a note, or record a voice note to transcribe locally…" /><div className="recording-tools"><label className="mic-selector"><Mic aria-hidden="true" /><span>Microphone</span><select value={selectedMicrophone} onChange={(event) => setSelectedMicrophone(event.target.value)} disabled={recording || transcribing}><option value="">Default microphone</option>{microphones.map((microphone, index) => <option value={microphone.deviceId} key={microphone.deviceId}>{microphone.label || `Microphone ${index + 1}`}</option>)}</select></label><div className={`waveform ${recording ? "live" : ""}`}><canvas ref={waveform} aria-label={recording ? "Live microphone waveform" : "Microphone waveform preview"} /></div></div><div className="note-actions"><button className={`record-button ${recording ? "recording" : ""}`} type="button" disabled={transcribing} onClick={recording ? stopAndTranscribe : startRecording}>{recording ? <Square aria-hidden="true" /> : <Mic aria-hidden="true" />}{recording ? "Stop & transcribe" : transcribing ? "Transcribing…" : "Record voice note"}</button><motion.button className="save-note" type="submit" disabled={!draft.trim() || recording || transcribing || saving} animate={saveSucceeded ? { backgroundColor: "#258451", scale: [1, 1.05, 1] } : { backgroundColor: "#0c1a31", scale: 1 }} transition={{ duration: 0.3 }}>{saveSucceeded ? <Check aria-hidden="true" /> : <Save aria-hidden="true" />}{saveSucceeded ? "Saved" : saving ? "Saving…" : "Save note"}</motion.button></div></form>
+    <form onSubmit={save} className="note-composer"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Type a note, or record a voice note for optional on-device transcription…" /><div className="recording-tools"><label className="mic-selector"><Mic aria-hidden="true" /><span>Microphone</span><select value={selectedMicrophone} onChange={(event) => setSelectedMicrophone(event.target.value)} disabled={recording || transcribing}><option value="">Default microphone</option>{microphones.map((microphone, index) => <option value={microphone.deviceId} key={microphone.deviceId}>{microphone.label || `Microphone ${index + 1}`}</option>)}</select></label><div className={`waveform ${recording ? "live" : ""}`}><canvas ref={waveform} aria-label={recording ? "Live microphone waveform" : "Microphone waveform preview"} /></div></div><div className="note-actions"><button className={`record-button ${recording ? "recording" : ""}`} type="button" disabled={transcribing} onClick={recording ? stopAndTranscribe : startRecording}>{recording ? <Square aria-hidden="true" /> : <Mic aria-hidden="true" />}{recording ? "Stop & transcribe" : transcribing ? "Transcribing…" : "Record voice note"}</button><motion.button className="save-note" type="submit" disabled={(!draft.trim() && !voiceAudio) || recording || transcribing || saving} animate={saveSucceeded ? { backgroundColor: "#258451", scale: [1, 1.05, 1] } : { backgroundColor: "#0c1a31", scale: 1 }} transition={{ duration: 0.3 }}>{saveSucceeded ? <Check aria-hidden="true" /> : <Save aria-hidden="true" />}{saveSucceeded ? "Saved" : saving ? "Saving…" : "Save note"}</motion.button></div></form>
     <p className="note-status" role="status">{status}</p>
     <AnimatePresence>{saveSucceeded && <motion.div className="note-save-toast" role="status" initial={{ opacity: 0, y: 8, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.96 }} transition={{ duration: 0.18 }}><Check aria-hidden="true" /> {saveLocation === "disk" ? "Saved to this Mac" : "Saved in browser storage"}</motion.div>}</AnimatePresence>
     <div className="note-list">{notes.length ? notes.map((note) => <div className="note-share-item" key={note.id}><article><div><span>{new Date(note.updatedAt).toLocaleString()} · {note.chapterTitle}{note.sharedFromPeer ? ` · Shared by ${note.authorProfile?.name ?? "a Vidmark user"}` : ""}</span>{note.source === "voice" ? <VoiceNote note={note} /> : <p>{note.text}</p>}</div><div className="note-row-actions" title={note.sharedFromPeer ? "Shared note" : note.source === "voice" ? "Voice note" : "Text note"}>{note.source === "voice" ? <Mic aria-hidden="true" /> : <FileText aria-hidden="true" />}{note.sharedFromPeer ? <Check aria-label="Shared by another user" /> : <><button type="button" aria-label="Share note with a Vidmark user" onClick={() => setSharingNoteId((current) => current === note.id ? null : note.id)}><Share2 aria-hidden="true" /></button><button type="button" aria-label="Delete note" onClick={() => void deleteNote(note.id)}><Trash2 aria-hidden="true" /></button></>}</div></article>{sharingNoteId === note.id ? <div className="note-recipient-picker"><b>Share this note</b><small>Search for a registered user. No email is sent.</small><DirectoryRecipientPicker actionLabel="Share note" onSelect={(recipient) => shareNote(note, recipient)} /></div> : null}</div>) : <p className="note-empty">No saved notes yet.</p>}</div>

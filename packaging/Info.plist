@@ -15,5 +15,6 @@
   <key>LSMultipleInstancesProhibited</key><true/>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Vidmark uses the selected microphone to create on-device voice notes.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Vidmark uses Apple Speech to transcribe voice notes on this Mac. Audio is never sent to a cloud transcription service.</string>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict></plist>
