@@ -3,7 +3,7 @@
   "manifest_version": "0.4",
   "name": "vidmark",
   "display_name": "Vidmark",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Build, study, revise, and share local Vidmark courses from Claude Desktop.",
   "long_description": "Vidmark is a local-first study application for YouTube courses. This extension connects Claude Desktop to the Vidmark app running on the same Mac. Claude can retrieve course-building prompts, read imported transcripts, coordinate course creation, edit questions and answers, manage concept graphs, and share complete courses through Vidmark's encrypted relay.\n\nVidmark must be installed and available on this Mac. The extension starts the app when necessary, then bridges Claude Desktop's local stdio MCP connection to Vidmark's loopback-only Streamable HTTP server. Course content and private state remain in Vidmark's local SQLite database.",
   "author": {

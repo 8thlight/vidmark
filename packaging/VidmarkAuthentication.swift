@@ -16,10 +16,14 @@ final class VidmarkAuthenticationController {
     private let pinVerifierKey = "VidmarkPINVerifier"
     private let pinDerivationRounds: UInt32 = 250_000
     private var defaults: UserDefaults { .standard }
+    private var hasPINMaterial: Bool {
+        defaults.data(forKey: pinSaltKey) != nil || defaults.data(forKey: pinVerifierKey) != nil
+    }
 
     var mode: VidmarkAuthenticationMode? {
-        guard let value = defaults.string(forKey: modeKey) else { return nil }
-        return VidmarkAuthenticationMode(rawValue: value)
+        if let value = defaults.string(forKey: modeKey),
+           let storedMode = VidmarkAuthenticationMode(rawValue: value) { return storedMode }
+        return hasPINMaterial ? .pin : nil
     }
 
     var modeDescription: String {
@@ -31,11 +35,15 @@ final class VidmarkAuthenticationController {
     }
 
     func authenticateOrConfigure(completion: @escaping (Bool) -> Void) {
-        guard let mode else {
-            configureInitialAuthentication(completion: completion)
+        if let mode {
+            authenticate(using: mode, completion: completion)
             return
         }
-        authenticate(using: mode, completion: completion)
+        if defaults.object(forKey: modeKey) != nil {
+            recoverWithMac(message: "Vidmark's saved security setting is invalid. Use Mac authentication to recover access.", completion: completion)
+            return
+        }
+        configureInitialAuthentication(completion: completion)
     }
 
     func changeAuthentication(completion: @escaping (Bool) -> Void) {
@@ -170,11 +178,7 @@ final class VidmarkAuthenticationController {
 
         guard let savedSalt = defaults.data(forKey: pinSaltKey),
               let savedVerifier = defaults.data(forKey: pinVerifierKey) else {
-            showError(title: "PIN unavailable", message: "The local PIN verifier is missing. Use Mac authentication to recover access.")
-            authenticateWithMac(reason: "Recover access to Vidmark") { [weak self] success in
-                if let self, success { self.defaults.removeObject(forKey: self.modeKey) }
-                completion(success)
-            }
+            recoverWithMac(message: "The local PIN verifier is incomplete. Use Mac authentication to recover access.", completion: completion)
             return
         }
 
@@ -208,6 +212,18 @@ final class VidmarkAuthenticationController {
             authenticateWithMac(reason: "Unlock Vidmark", completion: completion)
         default:
             completion(false)
+        }
+    }
+
+    private func recoverWithMac(message: String, completion: @escaping (Bool) -> Void) {
+        showError(title: "Security recovery required", message: message)
+        authenticateWithMac(reason: "Recover access to Vidmark") { [weak self] success in
+            if let self, success {
+                self.defaults.set(VidmarkAuthenticationMode.system.rawValue, forKey: self.modeKey)
+                self.deletePIN()
+                self.resetPINFailures()
+            }
+            completion(success)
         }
     }
 

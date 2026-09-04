@@ -143,11 +143,11 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
 
     private func observeWorkspaceSecurityEvents() {
         let center = NSWorkspace.shared.notificationCenter
-        center.addObserver(self, selector: #selector(handleWorkspaceLock), name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
-        center.addObserver(self, selector: #selector(handleWorkspaceLock), name: NSWorkspace.screensDidSleepNotification, object: nil)
+        center.addObserver(self, selector: #selector(handleWorkspaceLock(_:)), name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        center.addObserver(self, selector: #selector(handleWorkspaceLock(_:)), name: NSWorkspace.screensDidSleepNotification, object: nil)
     }
 
-    @objc private func handleWorkspaceLock() {
+    @objc private func handleWorkspaceLock(_ notification: Notification) {
         lockApplication()
     }
 
