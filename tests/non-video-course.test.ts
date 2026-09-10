@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VidmarkDatabase } from "../scripts/vidmark-db";
 import { chapterVideos, webUrl, youtubeId } from "../app/course-source";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ExamMode } from "../app/exam-mode";
 
 const root = await mkdtemp(join(tmpdir(), "vidmark-reading-test-"));
 const db = new VidmarkDatabase(join(root, "alice.sqlite"));
@@ -64,4 +67,17 @@ test("metadata edits preserve the selected course when active is omitted", () =>
   db.upsertCourse({ id: "selected", title: "Selected", sourceUrl: "https://example.com/selected", active: true });
   db.upsertCourse({ id: "selected", title: "Selected updated" });
   expect(db.getCourse("selected")?.active).toBe(true);
+});
+
+test("reading courses do not inherit the CCA exam or its start controls", () => {
+  const html = renderToStaticMarkup(createElement(ExamMode, { questionBank: [], courseId: "reading-course" }));
+  expect(html).toContain("No certification exam format has been configured");
+  expect(html).not.toContain("CCA-F");
+  expect(html).not.toContain("Start timed exam");
+});
+
+test("source-only imports never interpret an eleven-character course ID as a video", () => {
+  const imported = peer.importCourseBundle({ course: { id: "readingtest", title: "Reading", sourceUrl: "https://example.com/reading" } });
+  expect(imported?.videoUrl).toBe("");
+  expect(imported?.sourceUrl).toBe("https://example.com/reading");
 });

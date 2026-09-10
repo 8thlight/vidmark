@@ -43,6 +43,7 @@ const domainOrder = ["architecture", "tools", "code", "prompting", "context"] as
 const attemptColors = ["#ff624b", "#4b86ca", "#2d9c98", "#e4a229", "#9878cf"];
 
 export function ExamMode({ questionBank, courseId }: { questionBank: ExamQuestion[]; courseId: string }) {
+  const timedExamAvailable = courseId === DEFAULT_EXAM_COURSE_ID;
   const [tab, setTab] = useState<ExamTab>("session");
   const [exam, setExam] = useState<ActiveExam | null>(null);
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
@@ -64,6 +65,7 @@ export function ExamMode({ questionBank, courseId }: { questionBank: ExamQuestio
   }, [courseId]);
 
   useEffect(() => {
+    if (!timedExamAvailable) return;
     const timer = window.setTimeout(() => {
       const stored = readActiveExam();
       if (stored && !stored.paused) {
@@ -76,21 +78,21 @@ export function ExamMode({ questionBank, courseId }: { questionBank: ExamQuestio
       setHydrated(true);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [timedExamAvailable]);
 
   useEffect(() => {
-    if (hydrated) saveActiveExam(exam);
-  }, [exam, hydrated]);
+    if (hydrated && timedExamAvailable) saveActiveExam(exam);
+  }, [exam, hydrated, timedExamAvailable]);
 
   const activeExamId = exam?.id;
   const examPaused = exam?.paused;
   useEffect(() => {
-    if (!activeExamId || examPaused) return;
+    if (!timedExamAvailable || !activeExamId || examPaused) return;
     const interval = window.setInterval(() => {
       setExam((current) => current ? { ...current, remainingSeconds: Math.max(0, current.remainingSeconds - 1), lastTickAt: new Date().toISOString() } : null);
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [activeExamId, examPaused]);
+  }, [activeExamId, examPaused, timedExamAvailable]);
 
   const questionIds = exam?.questionIds;
   const questions = useMemo(() => questionIds ? examQuestionsFromIds(questionIds, questionBank) : [], [questionBank, questionIds]);
@@ -100,6 +102,7 @@ export function ExamMode({ questionBank, courseId }: { questionBank: ExamQuestio
   const activeStudyAid = activeQuestion ? studyAids[activeQuestion.id] : undefined;
 
   const startExam = () => {
+    if (!timedExamAvailable || !questionBank.length) return;
     const now = Date.now();
     setExam({
       id: `exam-${now}`,
@@ -170,6 +173,8 @@ export function ExamMode({ questionBank, courseId }: { questionBank: ExamQuestio
     const flagged = exam.flaggedIds.includes(activeQuestion.id);
     setExam({ ...exam, flaggedIds: flagged ? exam.flaggedIds.filter((id) => id !== activeQuestion.id) : [...exam.flaggedIds, activeQuestion.id] });
   };
+
+  if (!timedExamAvailable) return <section className="exam-mode"><div className="concept-view"><header><span>COURSE STUDY MAP</span><h1>Explore this course’s concepts</h1><p>Use Practice in the study workspace for this course’s questions. No certification exam format has been configured for this course.</p></header>{!conceptGraphLoaded ? <div className="graph-loading">Loading this course’s local concept graph…</div> : conceptGraph ? <Suspense fallback={<div className="graph-loading">Loading the local 3D graph…</div>}><ConceptGraph3D key={`${courseId}-${conceptGraph.graphId ?? "graph"}`} graph={conceptGraph} /></Suspense> : <div className="graph-loading">This course does not have a concept graph yet.</div>}</div></section>;
 
   return (
     <section className="exam-mode">
