@@ -119,17 +119,20 @@ export async function runCli(executable: string, args: string[], options: Comman
 }
 
 // Metadata-only handshakes: neither sends a user turn or consumes model tokens.
-async function readCliModels(id: CliHarness, executable: string): Promise<HarnessModel[]> {
+async function readCliModels(id: CliHarness, executable: string, signal?: AbortSignal): Promise<HarnessModel[]> {
+  signal?.throwIfAborted();
   const args = id === "codex" ? ["app-server"] : ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", ""];
   const child = await startCli(executable, args);
   return new Promise((resolve, reject) => {
     let buffer = "", done = false;
     const found: HarnessModel[] = [];
     const finish = (error?: Error) => {
-      if (done) return; done = true; clearTimeout(timer); killTree(child, "SIGKILL");
+      if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener("abort", abort); killTree(child, "SIGKILL");
       if (error) reject(error); else resolve([...new Map(found.map(m => [m.id, m])).values()]);
     };
     const timer = setTimeout(() => finish(new Error("Model discovery timed out. Use the CLI default or enter an exact model ID.")), 20_000);
+    const abort = () => finish(new Error("Model discovery cancelled."));
+    signal?.addEventListener("abort", abort, { once: true });
     const send = (value: unknown) => child.stdin.write(JSON.stringify(value) + "\n");
     child.stdin.on("error", () => {});
     child.stderr.resume();
@@ -169,6 +172,7 @@ async function readCliModels(id: CliHarness, executable: string): Promise<Harnes
         }
       }
     });
+    if (signal?.aborted) { abort(); return; }
     if (id === "codex") send({ id: 1, method: "initialize", params: { clientInfo: { name: "vidmark", title: "Vidmark", version: "1.4.0" } } });
     else send({ type: "control_request", request_id: "vidmark-models", request: { subtype: "initialize", hooks: {} } });
   });
@@ -183,8 +187,8 @@ export function authenticationState(id: CliHarness, result: CommandResult): Harn
     } catch { /* Old CLI or unexpected output is not evidence of login. */ }
   } else {
     const text = result.stdout + result.stderr;
-    if (result.code === 0 && /logged in/i.test(text)) return "ready";
     if (/not logged in|logged out/i.test(text)) return "signed_out";
+    if (result.code === 0 && /logged in/i.test(text)) return "ready";
   }
   return "unavailable";
 }
@@ -193,23 +197,27 @@ export const requiredCliFlags = {
   codex: ["--ignore-user-config", "--skip-git-repo-check", "--ephemeral", "--json", "--color", "--sandbox", "--config", "--model"],
   claude: ["--print", "--output-format", "--verbose", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "--settings", "--mcp-config", "--tools", "--allowedTools", "--permission-mode", "--max-turns", "--model"],
 };
-export async function discoverHarness(id: CliHarness, dependencies = { findCli, runCli, readCliModels }): Promise<HarnessStatus> {
+export async function discoverHarness(id: CliHarness, dependencies = { findCli, runCli, readCliModels }, signal?: AbortSignal): Promise<HarnessStatus> {
+  signal?.throwIfAborted();
   const label = id === "codex" ? "Codex CLI" : "Claude Code CLI";
   const executable = await dependencies.findCli(id);
   if (!executable) return { id, label, status: "not_installed", detail: `${label} was not found. Install the CLI, sign in from Terminal, then refresh.`, models: [] };
   const base = { id, label, executable, models: [] as HarnessModel[] };
   try {
-    const auth = await dependencies.runCli(executable, id === "codex" ? ["login", "status"] : ["auth", "status"]);
+    const auth = await dependencies.runCli(executable, id === "codex" ? ["login", "status"] : ["auth", "status"], { signal });
+    signal?.throwIfAborted();
     const status = authenticationState(id, auth);
     if (status !== "ready") return { ...base, status, detail: status === "signed_out" ? `Sign in from Terminal with ${id === "codex" ? "codex login" : "claude auth login"}, then refresh.` : "Login could not be verified. Check the CLI in Terminal or update it, then refresh." };
-    const help = await dependencies.runCli(executable, id === "codex" ? ["exec", "--help"] : ["--help"]);
+    const help = await dependencies.runCli(executable, id === "codex" ? ["exec", "--help"] : ["--help"], { signal });
+    signal?.throwIfAborted();
     const required = requiredCliFlags[id];
     if (help.code !== 0 || required.some(flag => !help.stdout.includes(flag))) return { ...base, status: "unavailable", detail: "Signed in, but this CLI needs an update for isolated course builds." };
     try {
-      const models = await dependencies.readCliModels(id, executable);
+      const models = await dependencies.readCliModels(id, executable, signal);
+      signal?.throwIfAborted();
       return { ...base, status: "ready", detail: "Installed · signed in", models, ...(!models.length ? { modelError: "No model catalog returned. Use the CLI default or enter a model ID." } : {}) };
-    } catch (error) { return { ...base, status: "ready", detail: "Installed · signed in", modelError: error instanceof Error ? error.message : "Model catalog unavailable." }; }
-  } catch { return { ...base, status: "unavailable", detail: "The CLI login check timed out or could not run. Check it in Terminal, then refresh." }; }
+    } catch (error) { signal?.throwIfAborted(); return { ...base, status: "ready", detail: "Installed · signed in", modelError: error instanceof Error ? error.message : "Model catalog unavailable." }; }
+  } catch { signal?.throwIfAborted(); return { ...base, status: "unavailable", detail: "The CLI login check timed out or could not run. Check it in Terminal, then refresh." }; }
 }
 
 export function resolveAgentModel(explicit: string, harness: HarnessStatus) {

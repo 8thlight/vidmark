@@ -74,6 +74,28 @@ test("instructions preserve identity, make QA optional, and contain no model cat
   expect(prompts).not.toMatch(/(?:gpt-\d|qwen\d|claude-\d|sonnet|opus|haiku|terra|luna)/i);
 });
 
+test("course sharing preserves archived state and readable QA history without duplicate imports", () => {
+  const id = "shared-archives";
+  db.upsertCourse({ id, title: "Archive sharing", sourceUrl: "https://example.com" });
+  db.replaceQuestions(id, [question, { ...question, id: "q2", question: "Second question" }]);
+  const saved = db.getQuestion(id, "q1")!;
+  db.reviewQuestion(id, "q1", saved.revision, { ...review, contentHash: saved.contentHash }, "mcp");
+  db.archiveQuestion(id, "q1");
+  const peer = new VidmarkDatabase(join(dir, "archive-import.sqlite"));
+  try {
+    const bundle = db.exportCourseBundle(id);
+    peer.importCourseBundle(bundle);
+    expect(peer.listQuestions(id).questions.map(q => q.id)).toEqual(["q2"]);
+    expect(peer.getQuestion(id, "q1")?.archived).toBe(true);
+    expect(peer.getQuestion(id, "q1")?.qaReview?.shared).toBe(true);
+    expect(peer.getQuestionReviews(id, "q1")).toHaveLength(1);
+    expect(peer.getQuestionReviews(id, "q1")[0]?.question).toEqual(question);
+    peer.importCourseBundle(bundle);
+    expect(peer.getQuestionReviews(id, "q1")).toHaveLength(1);
+    expect(peer.getQuestion(id, "q1")?.archived).toBe(true);
+  } finally { peer.close(); }
+});
+
 test("build QA requires reading the exact saved version and retrieving its cited evidence", () => {
   const ledger = new CourseReviewEvidence();
   const saved = db.getQuestion("quality", "q1")!;

@@ -10,6 +10,8 @@ import { AgentProviderDialog } from "../app/agent-provider";
 import { CourseAgentBuild } from "../app/agent-task";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
+import { McpQuestionReviews } from "../scripts/mcp-question-reviews";
+import { researchFetchResult } from "../scripts/research-fetch-result";
 
 const root = await mkdtemp(join(tmpdir(), "vidmark-fact-check-tests-"));
 const path = join(root, "test.sqlite"), prompts = join(root, "prompts.json");
@@ -23,6 +25,39 @@ const setup = (id: string) => {
 };
 const fetchEvidence = async () => ({ ok: true, content: "Primary evidence." });
 const report = { verdict: "accurate", reasoning: "The retrieved primary evidence supports the stated facts and answer rationales.", evidenceIds: ["https://example.com"] };
+
+test("fact checks bind transcript pages to an immutable hashed snapshot", async () => {
+  const q = setup("transcript-snapshot");
+  db.replaceTranscript(q.courseId, [{ time: 0, text: "Original source" }, { time: 1, text: "Original continuation" }]);
+  const session = createQuestionFactCheck(db, q.courseId, q.id, q.contentHash, {}, fetchEvidence, "QA", "mcp");
+  await session.invoke("get_course_question", {});
+  const first = await session.invoke("get_transcript", { limit: 1 }) as { evidenceId: string; cues: unknown[] };
+  db.replaceTranscript(q.courseId, [{ time: 0, text: "Replaced source" }]);
+  const second = await session.invoke("get_transcript", { offset: 1, limit: 1 }) as { evidenceId: string; cues: unknown[] };
+  expect(second.cues).toEqual([{ time: 1, text: "Original continuation" }]);
+  expect(first.evidenceId).toMatch(/:[a-f0-9]{64}:0-1$/);
+  expect(second.evidenceId.split(":")[2]).toBe(first.evidenceId.split(":")[2]);
+  session.close();
+});
+
+test("full-MCP QA requires a scoped expiring evidence session and cannot approve invented citations", async () => {
+  const q = setup("general-review");
+  let now = 100;
+  const reviews = new McpQuestionReviews(db, url => researchFetchResult(url, async () => "Primary evidence"), () => now);
+  try {
+    const begun = await reviews.start(q.courseId, q.id, "External agent", {});
+    const payload = { reviewer: "External agent", contentHash: q.contentHash, outcome: "reviewed", notes: report.reasoning, evidence: ["https://example.com"] };
+    await expect(reviews.record("unknown", q.courseId, q.id, q.revision, payload)).rejects.toThrow("not found");
+    await expect(reviews.record(begun.reviewSessionId, q.courseId, q.id, q.revision, payload)).rejects.toThrow("successfully retrieved");
+    await reviews.evidence(begun.reviewSessionId, { type: "url", url: "https://example.com" });
+    await expect(reviews.record(begun.reviewSessionId, "another-course", q.id, q.revision, payload)).rejects.toThrow("does not match");
+    expect((await reviews.record(begun.reviewSessionId, q.courseId, q.id, q.revision, payload))?.qaReview?.outcome).toBe("reviewed");
+    await expect(reviews.record(begun.reviewSessionId, q.courseId, q.id, q.revision, payload)).rejects.toThrow("not found");
+    const expiring = await reviews.start(q.courseId, q.id, "External agent", {});
+    now += 15 * 60_000;
+    expect(() => reviews.evidence(expiring.reviewSessionId, { type: "url", url: "https://example.com" })).toThrow("expired");
+  } finally { reviews.close(); }
+});
 
 for (const verdict of ["accurate", "inaccurate", "uncertain"] as const) test(`${verdict} report preserves the question, answers, rationale, hash and revision`, async () => {
   const before = setup(verdict);

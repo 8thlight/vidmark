@@ -10,6 +10,7 @@ import { getSystemPromptSettings, readSystemPromptOverrides, writeSystemPromptOv
 import { questionSchema, validateQuestion, questionReviewSchema, buildRequirementsSchema } from "./course-artifacts";
 import { VidmarkDatabase } from "./vidmark-db";
 import { VidmarkSyncService } from "./vidmark-sync";
+import { McpQuestionReviews } from "./mcp-question-reviews";
 
 const MCP_PORT = Number(process.env.VIDMARK_MCP_PORT ?? 31417);
 const textResult = (value: unknown) => ({ content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }] });
@@ -20,6 +21,7 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
   await mkdir(dirname(databasePath), { recursive: true });
   const systemPromptsPath = options.systemPromptsPath ?? join(dirname(databasePath), "system-prompts.json");
   const store = new VidmarkDatabase(databasePath);
+  const reviews = new McpQuestionReviews(store);
   const sync = await new VidmarkSyncService(store).start();
   const handler = createMcpHandler(() => {
     const server = new McpServer({ name: "vidmark-local", version: "3.1.0" }, { capabilities: { tools: {}, prompts: {} } });
@@ -41,7 +43,9 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
       return textResult({ saved: input.courseId, revision: saved?.revision });
     });
     server.registerTool("set_course_build_requirements", { description: "Record the user's requested question count and chapter coverage before authoring. No fixed default count; QA is optional.", inputSchema: z.object({ courseId: z.string().min(1), requirements: buildRequirementsSchema }) }, async ({ courseId, requirements }) => textResult(store.setBuildRequirements(courseId, requirements)));
-    server.registerTool("record_question_review", { description: "Record model/agent QA of an exact saved question revision. Read the question and its evidence first. This is an attributed review, not a guarantee of truth. Unreviewed questions remain usable and show an asterisk; edits invalidate review.", inputSchema: z.object({ courseId: z.string().min(1), questionId: z.string().min(1), expectedRevision: z.number().int().min(1), review: questionReviewSchema }) }, async ({ courseId, questionId, expectedRevision, review }) => textResult(store.reviewQuestion(courseId, questionId, expectedRevision, review, "mcp")));
+    server.registerTool("start_question_review", { description: "Read an exact question snapshot and start a 15-minute evidence-checked QA session. Retrieve sources with get_question_review_evidence before recording the report.", inputSchema: z.object({ courseId: z.string().min(1), questionId: z.string().min(1), reviewer: z.string().trim().min(1) }) }, async ({ courseId, questionId, reviewer }) => textResult(await reviews.start(courseId, questionId, reviewer, (await readSystemPromptOverrides(systemPromptsPath)).overrides)));
+    server.registerTool("get_question_review_evidence", { description: "Retrieve a public URL or immutable transcript page for a question review session. Cite the returned evidenceId; failed results are not evidence.", inputSchema: z.object({ reviewSessionId: z.string().uuid(), source: z.discriminatedUnion("type", [z.object({ type: z.literal("url"), url: z.string().url() }), z.object({ type: z.literal("transcript"), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(1000).default(250) })]) }) }, async ({ reviewSessionId, source }) => textResult(await reviews.evidence(reviewSessionId, source)));
+    server.registerTool("record_question_review", { description: "Record attributed QA after start_question_review and get_question_review_evidence. Requires that session's exact question revision/hash/reviewer and retrieved evidence IDs. This is not a guarantee of truth.", inputSchema: z.object({ reviewSessionId: z.string().uuid(), courseId: z.string().min(1), questionId: z.string().min(1), expectedRevision: z.number().int().min(1), review: questionReviewSchema }) }, async ({ reviewSessionId, courseId, questionId, expectedRevision, review }) => textResult(await reviews.record(reviewSessionId, courseId, questionId, expectedRevision, review)));
     server.registerTool("get_question_reviews", { description: "Read up to 50 attributed QA reports with the exact reviewed question snapshots. Historical reviews do not approve current edited content.", inputSchema: z.object({ courseId: z.string().min(1), questionId: z.string().min(1) }) }, async ({ courseId, questionId }) => textResult({ reviews: store.getQuestionReviews(courseId, questionId) }));
     server.registerTool("save_course_build", { description: "Atomically save course artifacts. Validates question structure, answer rationales, evidence references and recorded build requirements. QA is optional and recorded separately with record_question_review. Use upsert_course_question for incremental authoring.", inputSchema: z.object({ courseId: z.string().min(1), studyGuide: z.string().optional(), researchNotes: z.string().optional(), chaptersJson: z.string().optional().describe("Array of chapters with unique id, title, summary, optional content, learningObjectives and videos."), questionsJson: z.string().optional().describe("JSON array using exactly the upsert_course_question schema, including A/B/C/D option objects with text and rationale. Not Markdown."), conceptGraphJson: z.string().optional() }) }, async ({ courseId, studyGuide, researchNotes, chaptersJson, questionsJson, conceptGraphJson }) => textResult(store.saveCourseBuild(courseId, { studyGuide, researchNotes, chapters: parseArray(chaptersJson, "chaptersJson"), questions: parseArray(questionsJson, "questionsJson"), conceptGraph: conceptGraphJson ? parseRecord(conceptGraphJson, "conceptGraphJson") : undefined })));
     server.registerTool("list_course_chapters", { description: "List normalized chapter artifacts for a course in display order.", inputSchema: z.object({ courseId: z.string().min(1) }) }, async ({ courseId }) => textResult({ courseId, chapters: store.listChapters(courseId) }));
@@ -158,6 +162,6 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
     } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Vidmark request failed." }, { status: 400, headers }); }
   }});
   console.log(`Vidmark MCP 3.1 is listening at http://127.0.0.1:${MCP_PORT}/mcp with SQLite at ${databasePath}`);
-  return { stop(force = false) { sync.stop(); server.stop(force); store.close(); }, store, sync, server };
+  return { stop(force = false) { reviews.close(); sync.stop(); server.stop(force); store.close(); }, store, sync, server };
 }
 type BrowserSyncCourse = { id: string; title: string; source?: string; videoUrl?: string; sourceUrl?: string; originPrompt?: string; promptCredit?: string; transcript?: Array<{ time: number; text: string }>; conceptGraph?: unknown };

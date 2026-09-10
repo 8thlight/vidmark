@@ -107,7 +107,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"guide" | "transcript" | "notes" | "practice">("guide");
   const [filter, setFilter] = useState<"all" | Note["kind"]>("all");
-  const [imported, setImported] = useState<TranscriptCue[]>([]);
+
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [library, setLibrary] = useState<LibraryVideo[]>(bundledVideos);
   const [activeVideoId, setActiveVideoId] = useState(VIDEO_ID);
@@ -151,6 +151,7 @@ export default function Home() {
   const uploadRef = useRef<HTMLInputElement>(null);
   const notebookRef = useRef<HTMLElement>(null);
   const activeVideo = library.find((video) => video.id === activeVideoId) ?? starterVideo;
+  const imported = useMemo(() => (library.find(video => video.id === activeVideoId) ?? starterVideo).transcript, [library, activeVideoId]);
   const primaryVideoId = youtubeId(activeVideo.videoUrl ?? (bundledVideoIds.has(activeVideo.id) ? activeVideo.id : ""));
   const courseSourceUrl = webUrl(activeVideo.sourceUrl || activeVideo.videoUrl || (primaryVideoId ? `https://www.youtube.com/watch?v=${primaryVideoId}` : ""));
   const isStarter = activeVideo.id === VIDEO_ID;
@@ -177,7 +178,7 @@ export default function Home() {
     }] : []);
     if (!libraryInitialized.current) {
       const active = records.find((course) => course?.active);
-      if (active) { setActiveVideoId(String(active.id)); setActiveTime(active.id === VIDEO_ID ? 857 : 0); setImported(Array.isArray(active.transcript) ? active.transcript as TranscriptCue[] : []); }
+      if (active) { setActiveVideoId(String(active.id)); setActiveTime(active.id === VIDEO_ID ? 857 : 0); }
       libraryInitialized.current = true;
     }
     setLibraryLoaded(true);
@@ -373,7 +374,7 @@ export default function Home() {
       if (!parsed.length) throw new Error("No timestamped transcript cues were found in this file.");
       await importCourseTranscript(activeVideoId, parsed);
       setTranscriptImportError("");
-      setImported(parsed);
+
       persistLibrary(library.map((video) => video.id === activeVideoId ? { ...video, transcript: parsed } : video));
       setView("transcript");
     } catch (error) { setTranscriptImportError(error instanceof Error ? error.message : "The transcript could not be saved."); }
@@ -394,21 +395,21 @@ export default function Home() {
     const video: LibraryVideo = { id, title: newTitle.trim(), source: new URL(sourceUrl).hostname, sourceUrl, videoUrl: videoId ? sourceUrl : "", originPrompt: newPrompt.trim(), promptCredit: newPromptCredit.trim(), transcript: [] };
     await createLocalCourse({ id, title: video.title, source: video.source, sourceUrl, videoUrl: video.videoUrl ?? "", originPrompt: video.originPrompt, promptCredit: video.promptCredit });
     persistLibrary([...library, video]);
-    setActiveVideoId(id); setImported([]); setView("guide"); setActiveTime(0);
+    setActiveVideoId(id); setView("guide"); setActiveTime(0);
     setNewUrl(""); setNewTitle(""); setNewPrompt(""); setNewPromptCredit(""); setLibraryOpen(false);
     } catch (error) { setAddCourseError(error instanceof Error ? error.message : "The course could not be saved. Keep Vidmark unlocked and try again."); }
     finally { setAddingCourse(false); }
   };
 
   const selectVideo = (video: LibraryVideo) => {
-    setActiveVideoId(video.id); setImported(video.transcript); setActiveTime(video.id === VIDEO_ID ? 857 : 0); setView("guide"); setPlayerKey((key) => key + 1); setSetupStatus(""); setBuildPromptOpen(false); setLibraryOpen(false);
+    setActiveVideoId(video.id); setActiveTime(video.id === VIDEO_ID ? 857 : 0); setView("guide"); setPlayerKey((key) => key + 1); setSetupStatus(""); setBuildPromptOpen(false); setLibraryOpen(false);
   };
 
   const copyAgentBuildInstruction = async () => {
-    const instruction = `Connect to the local Vidmark MCP server at ${VIDMARK_MCP_URL}. Get the MCP prompt “build_vidmark_course” with courseId “${activeVideo.id}”. It combines Vidmark’s master course-builder prompt with this course’s required credited prompt. Act as the coordinator, delegate the prompt’s bounded research, chapter, assessment, concept-graph, visual-reference, and QA work to subagents, review their results, and save the complete course back to Vidmark with its SQLite-backed MCP tools. Confirm the saved chapter count, question count, and concept-graph revision before finishing.`;
+    const instruction = `Trusted full-library MCP workflow: this endpoint can access all courses, profiles, sharing and settings. It is not the restricted session used by Build with agent. Use only with an agent you trust, and limit this task to the selected course. Connect to the local Vidmark MCP server at ${VIDMARK_MCP_URL}. Get the MCP prompt “build_vidmark_course” with courseId “${activeVideo.id}”. It combines Vidmark’s master course-builder prompt with this course’s required credited prompt. Act as the coordinator, delegate the prompt’s bounded research, chapter, assessment, concept-graph, visual-reference, and QA work to subagents, review their results, and save the complete course back to Vidmark with its SQLite-backed MCP tools. Confirm the saved chapter count, question count, and concept-graph revision before finishing.`;
     try {
       await navigator.clipboard.writeText(instruction);
-      setSetupStatus("MCP handoff copied. Paste it into Claude Code, Codex, or another MCP-capable agent.");
+      setSetupStatus("Trusted full-MCP task copied. This connection grants access to your entire library, profile, sharing and settings—not only this course.");
     } catch {
       setSetupStatus(`Copy this MCP address into your agent: ${VIDMARK_MCP_URL}`);
     }
@@ -498,7 +499,7 @@ export default function Home() {
             <div className="stat-row"><div><strong>{isStarter ? "12h 38m" : primaryVideoId ? "Video" : "Reading"}</strong><span>{isStarter ? "runtime" : "format"}</span></div><div><strong>{isStarter ? "13" : activeVideo.chapters?.length ?? 0}</strong><span>chapters</span></div><div><strong>{questionBank.length}</strong><span>{isStarter ? "exam scenarios" : "practice questions"}</span></div><div><strong>{isStarter ? "6" : (activeVideo.chapters ?? []).reduce((count, chapter) => count + (Array.isArray(chapter.videos) ? chapter.videos.length : 0), 0)}</strong><span>{isStarter ? "visual references" : "supporting videos"}</span></div></div>
 
             <CourseAgentBuild key={activeVideo.id} courseId={activeVideo.id} built={Boolean(activeVideo.studyGuide)} onComplete={async () => { await refreshLibraryFromDatabase(); setQuestionBank(await getCourseQuestions(activeVideo.id, [])); }}>
-              <button type="button" onClick={() => void copyAgentBuildInstruction()}>Copy agent task</button>
+              <button type="button" onClick={() => void copyAgentBuildInstruction()} title="For trusted agents only: grants full-library MCP access, including profiles, sharing and settings.">Copy trusted full-MCP task</button>
               <button type="button" onClick={() => void viewBuildPrompt()}>View build prompt</button>
               {primaryVideoId ? <button type="button" onClick={() => { setView("transcript"); uploadRef.current?.click(); }}>{activeVideo.transcript.length ? "Replace transcript" : "Import transcript"}</button> : null}
             </CourseAgentBuild>

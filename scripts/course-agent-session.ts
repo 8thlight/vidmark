@@ -12,14 +12,14 @@ const textResult = (value: unknown) => ({ content: [{ type: "text" as const, tex
 
 // A capability endpoint for one build, not a proxy to the full learner MCP.
 // It cannot share/publish, change profiles/settings, or modify another course.
-export function createCourseAgentSession(store: VidmarkDatabase, courseId: string, overrides: SystemPromptOverrides, fetchResearch: (url: string) => Promise<unknown>, onTool: (name: string, ok: boolean) => void) {
+export function createCourseAgentSession(store: VidmarkDatabase, courseId: string, overrides: SystemPromptOverrides, fetchResearch: (url: string) => Promise<unknown>, onTool: (name: string, ok: boolean) => void, signal?: AbortSignal, dependencies = { acquireYouTubeTranscript }) {
   const course = store.getCourse(courseId);
   if (!course) throw new Error("Course not found.");
   let active = true, saved = false;
   const stagedQuestions = new Map<string, ReturnType<typeof validateQuestion>>();
   const evidence = new CourseReviewEvidence();
   const token = crypto.randomUUID();
-  const ensureActive = () => { if (!active) throw new Error("This course build has ended."); };
+  const ensureActive = () => { signal?.throwIfAborted(); if (!active) throw new Error("This course build has ended."); };
   const prompt = `Current date: ${new Date().toISOString().slice(0, 10)}.\n\n${composeCourseBuildPrompt(String(course.title), courseId, String(course.coursePrompt), String(course.promptCredit), getSystemPrompt("courseBuilderMaster", overrides))}\n\n${getSystemPrompt("artifactContract", overrides)}\n\n${getSystemPrompt("cliCoordinator", overrides)}`;
   const handler = createMcpHandler(() => {
     const server = new McpServer({ name: "vidmark-course-build", version: "1.0.0" });
@@ -41,7 +41,7 @@ export function createCourseAgentSession(store: VidmarkDatabase, courseId: strin
     });
     tool("acquire_course_transcript", "Acquire authorized public YouTube captions when the course has no transcript. Never fabricates missing captions.", scope, async () => {
       if (!course.videoUrl) throw new Error("This reading-based course does not need a transcript. Read sourceUrl instead.");
-      const acquired = await acquireYouTubeTranscript(String(course.videoUrl));
+      const acquired = await dependencies.acquireYouTubeTranscript(String(course.videoUrl), "en", signal);
       ensureActive(); store.replaceTranscript(courseId, acquired.cues);
       return { cues: acquired.cues.length, sourceUrl: acquired.sourceUrl, automaticallyGenerated: acquired.automaticallyGenerated };
     });

@@ -21,6 +21,8 @@ test("server-renders the Vidmark workspace", async () => {
   assert.match(html, /Vidmark — Study Library/i);
   assert.match(html, /Claude Certified Architect/i);
   assert.match(html, /Course library/i);
+  assert.match(html, /Copy trusted full-MCP task/);
+  assert.match(html, /For trusted agents only: grants full-library MCP access/);
   assert.match(visibleHtml, /2\s+courses/i);
   assert.match(html, /exam scenarios/i);
   assert.match(html, /<strong>100<\/strong><span>exam scenarios<\/span>/i);

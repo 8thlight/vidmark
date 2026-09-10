@@ -99,14 +99,14 @@ The `build_vidmark_course` prompt instructs the agent to read the course source 
 
 ## MCP tools
 
-Vidmark exposes 46 tools:
+Vidmark exposes 48 tools:
 
 | Capability | Tools |
 | --- | --- |
 | Courses | `list_courses`, `get_course`, `upsert_course` |
 | Complete builds | `set_course_build_requirements`, `save_course_build`, `list_course_chapters` |
 | Concept graphs | `get_course_concept_graph`, `upsert_course_concept_graph` |
-| Questions | `list_course_questions`, `get_course_question`, `upsert_course_question`, `patch_course_question`, `archive_course_question`, `record_question_review`, `get_question_reviews` |
+| Questions | `list_course_questions`, `get_course_question`, `upsert_course_question`, `patch_course_question`, `archive_course_question`, `start_question_review`, `get_question_review_evidence`, `record_question_review`, `get_question_reviews` |
 | Question suggestions | `create_question_suggestion`, `list_question_suggestions`, `review_question_suggestion` |
 | Transcripts | `get_transcript`, `replace_transcript`, `acquire_course_transcript` |
 | Notes | `list_notes` |
@@ -132,7 +132,9 @@ separately when performed; leave unreviewed questions marked with an asterisk.
 
 Questions marked `*` have no recorded agent QA for their current content, have outstanding findings, or could not be verified. They remain usable. **Fact Check** uses the saved provider to assess factual accuracy of the question, answer, close second and rationales—not writing style or question design. Its scoped tools cannot edit content. It saves a reasoned report with evidence: no inaccuracies found, potential inaccuracies, or unable to verify. Reports may reveal answers. Stale question versions cannot receive a new review.
 
-A connected agent can also call `record_question_review`, supplying the exact revision, content hash, reviewer attribution, findings, and evidence. Editing content invalidates its review. Shared courses preserve matching review reports; an agent assessment is not a guarantee of correctness. Fact-check instructions are locally editable in **Settings → System prompts**; tool restrictions remain enforced.
+A connected agent starts QA with `start_question_review`, retrieves sources with `get_question_review_evidence`, then calls `record_question_review` using the returned session ID and exact revision/hash. Sessions expire after 15 minutes and reject unread or invented evidence. Editing content invalidates its review. Shared courses preserve matching reports and archived states; an agent assessment is not a guarantee of correctness. Fact-check instructions are locally editable in **Settings → System prompts**; tool restrictions remain enforced.
+
+**Copy trusted full-MCP task** connects an external agent to the entire local MCP interface—including other courses, profile, sharing and settings. Use this only with a trusted agent. **Build with agent** uses a restricted, course-scoped session instead.
 
 Course saves are atomic and validate question structure, per-option explanations, references, and recorded quantity/coverage requirements. Settings contains model selection, automatic question imports, and opt-in local debug logging. Debug logs include tool outcomes and content hashes, not prompts, credentials, transcripts, or model responses.
 

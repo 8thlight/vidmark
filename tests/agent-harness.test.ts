@@ -56,6 +56,7 @@ test("authentication distinguishes signed in, signed out and unrecognized output
   const result = (code: number, stdout: string, stderr = "") => ({ code, stdout, stderr });
   expect(authenticationState("codex", result(0, "", "Logged in using ChatGPT"))).toBe("ready");
   expect(authenticationState("codex", result(1, "Not logged in"))).toBe("signed_out");
+  expect(authenticationState("codex", result(0, "Not logged in"))).toBe("signed_out");
   expect(authenticationState("codex", result(0, "unknown"))).toBe("unavailable");
   expect(authenticationState("claude", result(0, '{"loggedIn":true,"email":"do-not-return@example.com"}'))).toBe("ready");
   expect(authenticationState("claude", result(1, '{"loggedIn":false}'))).toBe("signed_out");
@@ -85,6 +86,41 @@ test("launch arguments isolate config, never bypass permissions, and pass the se
     expect(() => courseCliArguments(id, "bad\n--flag", "http://127.0.0.1:1234/mcp/run")).toThrow();
     expect(() => courseCliArguments(id, "", "https://example.com/mcp")).toThrow();
   }
+});
+
+test("capability detection propagates cancellation through login, help and model discovery", async () => {
+  for (const stage of ["login", "help", "models"]) {
+    const controller = new AbortController();
+    const waitForCancel = (signal?: AbortSignal): Promise<never> => {
+      expect(signal).toBe(controller.signal);
+      return new Promise((_resolve, reject) => { signal!.addEventListener("abort", () => reject(new Error("Cancelled")), { once: true }); controller.abort(); });
+    };
+    await expect(discoverHarness("codex", {
+      findCli: async () => "/test/codex",
+      runCli: async (_exe, args, options) => {
+        if ((stage === "login" && args[0] === "login") || (stage === "help" && args.includes("--help"))) return waitForCancel(options?.signal);
+        return { code: 0, stdout: "Logged in " + requiredCliFlags.codex.join(" "), stderr: "" };
+      },
+      readCliModels: async (_id, _exe, signal) => stage === "models" ? waitForCancel(signal) : [],
+    }, controller.signal)).rejects.toThrow();
+  }
+});
+
+test("scoped transcript acquisition receives the build signal and cannot write after cancellation", async () => {
+  const id = "caption-cancel";
+  db.upsertCourse({ id, title: "Video", videoUrl: "https://youtu.be/o3CX_Y59_74" });
+  const controller = new AbortController();
+  const session = createCourseAgentSession(db, id, {}, async () => ({}), () => {}, controller.signal, {
+    acquireYouTubeTranscript: async (_video, _language, signal) => {
+      expect(signal).toBe(controller.signal);
+      controller.abort();
+      return { videoId: "o3CX_Y59_74", language: "en", trackName: "Test", automaticallyGenerated: false, sourceUrl: "https://youtube.com", acquiredAt: new Date().toISOString(), cues: [{ time: 0, text: "Late caption" }] };
+    },
+  });
+  try {
+    expect((await rpc(session.url, "tools/call", { name: "acquire_course_transcript", arguments: { courseId: id } })).isError).toBe(true);
+    expect(db.getTranscript(id).cues).toHaveLength(0);
+  } finally { session.close(); }
 });
 
 test("discovery rejects every missing flag required by either CLI launch contract", async () => {
@@ -165,7 +201,7 @@ test("course-scoped MCP rejects other courses, sharing and untrusted origins; va
   } finally { session.close(); }
 });
 
-test("CLI coordinator requires BOTH a successful process result and a complete MCP save", async () => {
+test("CLI coordinator requires a complete MCP save and preserves saved status after a later CLI failure", async () => {
   const debug = new DebugLog(join(root, "Diagnostics")); debug.setEnabled(true);
   for (const mode of ["no-save", "saved", "failed"] as const) {
     makeCourse(mode);
@@ -184,7 +220,7 @@ test("CLI coordinator requires BOTH a successful process result and a complete M
         return { code: mode === "failed" ? 1 : 0, stdout: "", stderr: "secret should never reach logs" };
       },
     });
-    expect(job.status).toBe(mode === "saved" ? "complete" : "failed");
+    expect(job.status).toBe(mode !== "no-save" ? "complete" : "failed");
   }
   expect(JSON.stringify(debug.entries())).not.toContain("secret");
   expect(debug.entries().some(e => e.event === "build.complete")).toBe(true);

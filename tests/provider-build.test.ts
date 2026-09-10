@@ -74,6 +74,55 @@ test("model failure during optional QA does not mark persisted artifacts as a fa
   expect(db.getCourse(job.courseId)?.questions.length).toBe(1);
 });
 
+test("in-app staged questions remain out of SQLite until an atomic complete save", async () => {
+  for (const finish of ["save", "fail", "cancel"] as const) {
+    const job = jobFor("staging-" + finish);
+    const controller = new AbortController();
+    let turn = 0;
+    await runBuild(job, settings, databasePath, join(root, "prompts.json"), debug, controller.signal, {
+      fetchResearch,
+      callModel: async () => {
+        if (turn++ === 0) return tool("set_course_build_requirements", { questionCount: 2 });
+        if (turn === 2) return tool("upsert_course_question", { question: fixture });
+        expect(db.getCourse(job.courseId)?.questions.length).toBe(finish === "save" && turn > 4 ? 2 : 0);
+        if (finish === "fail") throw new Error("Model stopped");
+        if (finish === "cancel") { controller.abort(); return tool("save_course_build", artifacts); }
+        if (turn === 3) return tool("upsert_course_question", { question: { ...fixture, id: "q2", question: "A distinct question?" } });
+        if (turn === 4) {
+          const withoutQuestions = { studyGuide: artifacts.studyGuide, researchNotes: artifacts.researchNotes, chapters: artifacts.chapters, conceptGraph: artifacts.conceptGraph };
+          return tool("save_course_build", withoutQuestions);
+        }
+        return { role: "assistant", content: "Saved" };
+      },
+    });
+    expect(job.status).toBe(finish === "save" ? "complete" : "failed");
+    expect(db.getCourse(job.courseId)?.questions.length).toBe(finish === "save" ? 2 : 0);
+  }
+});
+
+test("in-app builds reject archived edits and video saves without a transcript", async () => {
+  const job = jobFor("guarded-build");
+  db.upsertCourse({ id: job.courseId, title: "Video", videoUrl: "https://youtu.be/o3CX_Y59_74" });
+  db.upsertQuestion(job.courseId, fixture); db.archiveQuestion(job.courseId, "q1");
+  const archived = db.getQuestion(job.courseId, "q1")!;
+  let turn = 0;
+  const errors: string[] = [];
+  await runBuild(job, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
+    fetchResearch,
+    callModel: async (_settings, messages) => {
+      const last = messages.at(-1);
+      if (last?.role === "tool") errors.push(JSON.parse(last.content ?? "{}").error);
+      if (turn++ === 0) return tool("upsert_course_question", { question: fixture, expectedRevision: archived.revision });
+      if (turn === 2) return tool("save_course_build", artifacts);
+      throw new Error("End test");
+    },
+  });
+  expect(errors[0]).toContain("Archived");
+  expect(errors[1]).toContain("transcript");
+  expect(db.getQuestion(job.courseId, "q1")).toEqual(archived);
+  expect(db.getCourse(job.courseId)?.studyGuide).toBeFalsy();
+});
+
 test("cancellation reaches coordinators and specialists and prevents subsequent tool writes", async () => {
   for (const specialist of [false, true]) {
     const job = jobFor("cancel-" + specialist);
@@ -123,5 +172,27 @@ test("the build API exposes cancellation for the in-app provider and stops its H
     }
     expect(stopped.phase).toBe("Build cancelled");
     expect(db.getCourse(job.courseId)?.questions.length).toBe(0);
+    const question = db.upsertQuestion(job.courseId, fixture)!;
+    const check = await (await fetch(new URL("/fact-check", server.url), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ courseId: job.courseId, questionId: question.id, contentHash: question.contentHash }) })).json();
+    expect(check.id).toBeString();
+    expect((await fetch(new URL("/build/" + check.id + "/cancel", server.url), { method: "POST" })).status).toBe(400);
+    expect((await fetch(new URL("/fact-check/" + check.id + "/cancel", server.url), { method: "POST" })).status).toBe(200);
   } finally { server.stop(true); model.stop(true); }
+});
+
+test("provider CORS follows the configured UI port unless explicitly overridden", async () => {
+  const oldPort = process.env.VIDMARK_APP_PORT, oldOrigins = process.env.VIDMARK_ALLOWED_ORIGINS;
+  process.env.VIDMARK_APP_PORT = "3011"; delete process.env.VIDMARK_ALLOWED_ORIGINS;
+  const server = startModelProviderServer(join(root, "cors-settings.json"), databasePath, join(root, "prompts.json"), 0);
+  try {
+    expect((await fetch(new URL("/settings", server.url), { headers: { Origin: "http://localhost:3011" } })).status).toBe(200);
+    expect((await fetch(new URL("/settings", server.url), { headers: { Origin: "http://localhost:3010" } })).status).toBe(403);
+    process.env.VIDMARK_ALLOWED_ORIGINS = "http://localhost:3999";
+    expect((await fetch(new URL("/settings", server.url), { headers: { Origin: "http://localhost:3999" } })).status).toBe(200);
+    expect((await fetch(new URL("/settings", server.url), { headers: { Origin: "http://localhost:3011" } })).status).toBe(403);
+  } finally {
+    server.stop(true);
+    if (oldPort === undefined) delete process.env.VIDMARK_APP_PORT; else process.env.VIDMARK_APP_PORT = oldPort;
+    if (oldOrigins === undefined) delete process.env.VIDMARK_ALLOWED_ORIGINS; else process.env.VIDMARK_ALLOWED_ORIGINS = oldOrigins;
+  }
 });

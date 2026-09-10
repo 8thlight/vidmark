@@ -90,7 +90,11 @@ try {
   if (!course?.studyGuide || course.chapters.length !== 1 || course.questions.length !== 1 || course.conceptGraph?.graphId !== "agent-workflow") throw new Error("The completed MCP build was not persisted as one complete SQLite course.");
   const initialQuestion = service.store.getQuestion(courseId, "workflow-001")!;
   if (initialQuestion.qaReview) throw new Error("New questions must not claim QA.");
-  const reviewResult = await request("tools/call", { name: "record_question_review", arguments: { courseId, questionId: initialQuestion.id, expectedRevision: initialQuestion.revision, review: { contentHash: initialQuestion.contentHash, reviewer: "MCP acceptance verifier", outcome: "reviewed", notes: "Checked all options against the test transcript.", evidence: ["Transcript at 12 seconds"] } } });
+  const reviewSession = toolText(await request("tools/call", { name: "start_question_review", arguments: { courseId, questionId: initialQuestion.id, reviewer: "MCP acceptance verifier" } }));
+  const evidence = toolText(await request("tools/call", { name: "get_question_review_evidence", arguments: { reviewSessionId: reviewSession.reviewSessionId, source: { type: "transcript" } } }));
+  const unverified = await request("tools/call", { name: "record_question_review", arguments: { courseId, questionId: initialQuestion.id, expectedRevision: initialQuestion.revision, review: { contentHash: initialQuestion.contentHash, reviewer: "MCP acceptance verifier", outcome: "reviewed", notes: "Unverified evidence must be rejected.", evidence: ["Fabricated"] } } });
+  if (!unverified.isError) throw new Error("General MCP accepted a review without an evidence session.");
+  const reviewResult = await request("tools/call", { name: "record_question_review", arguments: { reviewSessionId: reviewSession.reviewSessionId, courseId, questionId: initialQuestion.id, expectedRevision: initialQuestion.revision, review: { contentHash: initialQuestion.contentHash, reviewer: "MCP acceptance verifier", outcome: "reviewed", notes: "Checked all options against the test transcript.", evidence: [evidence.evidenceId] } } });
   if (reviewResult.isError || service.store.getQuestion(courseId, initialQuestion.id)?.qaReview?.outcome !== "reviewed") throw new Error("MCP QA did not persist.");
   const history = toolText(await request("tools/call", { name: "get_question_reviews", arguments: { courseId, questionId: initialQuestion.id } }));
   if (!Array.isArray(history.reviews) || history.reviews.length !== 1) throw new Error("MCP QA history was not readable.");

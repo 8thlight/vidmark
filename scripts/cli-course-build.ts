@@ -21,7 +21,7 @@ export async function runCliCourseBuild(job: BuildJob, preferences: AgentPrefere
   debug.record("build.started");
   try {
     update("Checking provider", "Verifying the installed CLI and its login before starting.");
-    const harness = await dependencies.discoverHarness(id);
+    const harness = await dependencies.discoverHarness(id, undefined, signal);
     if (signal.aborted) throw new Error("Build cancelled.");
     if (harness.status !== "ready" || !harness.executable) throw new Error(harness.detail);
     const prompts = await readSystemPromptOverrides(systemPromptsPath);
@@ -30,7 +30,7 @@ export async function runCliCourseBuild(job: BuildJob, preferences: AgentPrefere
       if (tool === "save_course_build") debug.outcome(job.id, "save_course_build", ok);
       update(ok ? "Agent working" : "Agent correcting a tool request", `${harness.label} · ${tool.replaceAll("_", " ")}${ok ? "" : " needs attention"}`);
       job.transcriptCues = store.getTranscript(job.courseId, undefined, 100000).cues.length;
-    });
+    }, signal);
     signal.addEventListener("abort", closeSession, { once: true });
     if (signal.aborted) throw new Error("Build cancelled.");
     workspace = await mkdtemp(join(tmpdir(), "vidmark-course-agent-"));
@@ -57,9 +57,11 @@ export async function runCliCourseBuild(job: BuildJob, preferences: AgentPrefere
     debug.record("build.complete");
     Object.assign(job, { status: "complete", phase: "Course saved", message: `${course.chapters.length} chapters and ${course.questions.filter(q => !q.archived).length} questions saved through MCP. Questions without agent QA have an asterisk.`, updatedAt: Date.now() });
   } catch (error) {
-    debug.record("build.failed");
     const message = error instanceof Error ? error.message : "The CLI course build failed.";
-    Object.assign(job, { status: "failed", phase: signal.aborted ? "Build cancelled" : "Build stopped", message, error: message, updatedAt: Date.now() });
+    debug.record(session?.saved ? "build.complete" : "build.failed");
+    Object.assign(job, session?.saved
+      ? { status: "complete", phase: "Course saved", message: "Course artifacts were saved before the agent stopped. Optional QA may be incomplete; unreviewed questions retain their asterisk.", updatedAt: Date.now() }
+      : { status: "failed", phase: signal.aborted ? "Build cancelled" : "Build stopped", message, error: message, updatedAt: Date.now() });
   } finally {
     signal.removeEventListener("abort", closeSession);
     session?.close(); store.close();

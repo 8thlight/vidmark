@@ -755,12 +755,16 @@ export class VidmarkDatabase {
     // Shared QA is an attributed report, never a fresh local verification.
     for (const item of Array.isArray(course.questions) ? course.questions : []) {
       if (!item || typeof item !== "object") continue;
-      const record = item as { id?: string; qaReview?: QuestionReview };
+      const record = item as { id?: string; archived?: boolean; qaReview?: QuestionReview };
+      if (record.id && record.archived === true) this.db.query("UPDATE questions SET archived=1 WHERE course_id=? AND id=?").run(id, record.id);
       const candidate = record.qaReview;
       const parsed = questionReviewSchema.safeParse(candidate);
       const savedQuestion = record.id ? this.getQuestion(id, record.id) : null;
       if (candidate && parsed.success && savedQuestion?.contentHash === candidate.contentHash && (candidate.via === "mcp" || candidate.via === "local-model") && Number.isFinite(candidate.reviewedAt)) {
-        this.db.query("INSERT INTO question_reviews VALUES (?,?,?,?) ON CONFLICT(course_id,question_id) DO UPDATE SET payload_hash=excluded.payload_hash,review_json=excluded.review_json").run(id, record.id!, candidate.contentHash, json({ ...parsed.data, via: candidate.via, reviewedAt: candidate.reviewedAt, shared: true }));
+        const review = { ...parsed.data, via: candidate.via, reviewedAt: candidate.reviewedAt, shared: true };
+        this.db.query("INSERT INTO question_reviews VALUES (?,?,?,?) ON CONFLICT(course_id,question_id) DO UPDATE SET payload_hash=excluded.payload_hash,review_json=excluded.review_json").run(id, record.id!, candidate.contentHash, json(review));
+        const recorded = this.db.query("SELECT 1 FROM activity_log WHERE action='review' AND entity_type='question' AND entity_id=? AND json_extract(details_json,'$.courseId')=? AND json_extract(details_json,'$.review')=? LIMIT 1").get(record.id!, id, json(review));
+        if (!recorded) this.log("review", "question", record.id!, { courseId: id, review, revision: savedQuestion.revision, question: savedQuestion.payload });
       }
     }
     if (course.conceptGraph) this.saveConceptGraph(id, course.conceptGraph);

@@ -115,14 +115,14 @@ const updateJob = (job: BuildJob, phase: string, message: string) => {
 const localTools = [
   { type: "function", function: { name: "set_course_build_requirements", description: "Record the user's requested quantity and chapter coverage before authoring. Omit quantity only when none was requested.", parameters: z.toJSONSchema(buildRequirementsSchema) } },
   { type: "function", function: { name: "get_course_question", description: "Read a saved question and its current revision before QA.", parameters: { type: "object", properties: { questionId: { type: "string" } }, required: ["questionId"] } } },
-  { type: "function", function: { name: "upsert_course_question", description: "Save a single schema-valid question incrementally. Does not mark the whole build complete.", parameters: { type: "object", properties: { question: z.toJSONSchema(questionSchema), expectedRevision: { type: "integer" } }, required: ["question"] } } },
+  { type: "function", function: { name: "upsert_course_question", description: "Before the first complete save, stage questions without changing the library. Commit staged questions by omitting questions in save_course_build. After saving, only exact-revision edits of active questions are allowed. Save a single schema-valid question incrementally. Does not mark the whole build complete.", parameters: { type: "object", properties: { question: z.toJSONSchema(questionSchema), expectedRevision: { type: "integer" } }, required: ["question"] } } },
   { type: "function", function: { name: "record_question_review", description: "Optionally record QA of an exact saved question revision after inspecting original evidence. Not required to save.", parameters: { type: "object", properties: { questionId: { type: "string" }, expectedRevision: { type: "integer" }, review: z.toJSONSchema(questionReviewSchema) }, required: ["questionId", "expectedRevision", "review"] } } },
   { type: "function", function: { name: "get_course", description: "Read the selected course metadata and existing generated artifacts.", parameters: { type: "object", properties: {}, additionalProperties: false } } },
   { type: "function", function: { name: "get_transcript", description: "Read timestamped transcript cues in bounded pages.", parameters: { type: "object", properties: { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 500 } }, required: ["offset", "limit"], additionalProperties: false } } },
   { type: "function", function: { name: "acquire_course_transcript", description: "Retrieve the selected course video's public YouTube caption track, preserve timestamps, and save it locally. Call this when get_transcript reports zero cues.", parameters: { type: "object", properties: { preferredLanguage: { type: "string", description: "Preferred BCP 47 language code, such as en or es." } }, additionalProperties: false } } },
   { type: "function", function: { name: "fetch_url", description: "Fetch an authoritative HTTP(S) documentation page for verification. Supply the exact primary-source URL.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false } } },
   { type: "function", function: { name: "run_subagent", description: "Run an isolated specialist model context for bounded research, chapter, assessment, visual-reference, or QA work.", parameters: { type: "object", properties: { role: { type: "string" }, task: { type: "string" }, context: { type: "string" } }, required: ["role", "task", "context"], additionalProperties: false } } },
-  { type: "function", function: { name: "save_course_build", description: "Save schema-valid course artifacts; questions without QA remain unreviewed. Save course artifacts to Vidmark's SQLite database. chapters and questions must be non-empty arrays; conceptGraph must contain nodes and edges.", parameters: { type: "object", properties: { studyGuide: { type: "string" }, researchNotes: { type: "string" }, chapters: { type: "array", items: z.toJSONSchema(chapterSchema) }, questions: { type: "array", items: z.toJSONSchema(questionSchema) }, conceptGraph: { type: "object", properties: { schemaVersion: { type: "string" }, nodes: { type: "array", items: { type: "object" } }, edges: { type: "array", items: { type: "object" } } }, required: ["nodes", "edges"], additionalProperties: true } }, required: ["studyGuide", "researchNotes", "chapters", "questions", "conceptGraph"], additionalProperties: false } } },
+  { type: "function", function: { name: "save_course_build", description: "Save schema-valid course artifacts; questions without QA remain unreviewed. Save course artifacts to Vidmark's SQLite database. Stage questions with upsert_course_question, then omit questions here to commit the staged bank atomically. Supplied chapters/questions must be non-empty; conceptGraph must contain nodes and edges.", parameters: { type: "object", properties: { studyGuide: { type: "string" }, researchNotes: { type: "string" }, chapters: { type: "array", items: z.toJSONSchema(chapterSchema) }, questions: { type: "array", items: z.toJSONSchema(questionSchema) }, conceptGraph: { type: "object", properties: { schemaVersion: { type: "string" }, nodes: { type: "array", items: { type: "object" } }, edges: { type: "array", items: { type: "object" } } }, required: ["nodes", "edges"], additionalProperties: true } }, required: ["studyGuide", "researchNotes", "chapters", "conceptGraph"], additionalProperties: false } } },
 ];
 
 
@@ -130,6 +130,7 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
   debug.record("build.started");
   const store = new VidmarkDatabase(databasePath);
   const reviewEvidence = new CourseReviewEvidence();
+  const stagedQuestions = new Map<string, ReturnType<typeof validateQuestion>>();
   let saved = false;
   try {
     const storedPrompts = await readSystemPromptOverrides(systemPromptsPath);
@@ -171,14 +172,27 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
           if (call.function.name === "set_course_build_requirements") {
             result = store.setBuildRequirements(String(course.id), buildRequirementsSchema.parse(args));
           } else if (call.function.name === "get_course_question") {
-            result = reviewEvidence.readQuestion(store.getQuestion(String(course.id), String(args.questionId)));
+            const id = String(args.questionId);
+            result = stagedQuestions.has(id) ? { staged: true, payload: stagedQuestions.get(id) } : reviewEvidence.readQuestion(store.getQuestion(String(course.id), id));
           } else if (call.function.name === "upsert_course_question") {
             const question = validateQuestion(args.question);
             const expectedRevision = args.expectedRevision === undefined ? undefined : z.number().int().min(1).parse(args.expectedRevision);
-            if (store.getQuestion(String(course.id), question.id) && expectedRevision === undefined) throw new Error("Read the existing question and supply expectedRevision before editing it.");
-            result = store.upsertQuestion(String(course.id), question, expectedRevision);
+            const current = store.getQuestion(String(course.id), question.id);
+            if (current?.archived) throw new Error("Archived questions cannot be edited by a build.");
+            if (current && expectedRevision === undefined) throw new Error("Read the existing question and supply expectedRevision before editing it.");
+            if (current && current.revision !== expectedRevision) throw new Error("Question revision conflict. Read the latest question first.");
+            if (!saved) {
+              if (!stagedQuestions.has(question.id) && stagedQuestions.size >= 1000) throw new Error("A build can stage at most 1000 questions.");
+              stagedQuestions.set(question.id, question);
+              result = { staged: true, savedToLibrary: false, stagedCount: stagedQuestions.size };
+            } else {
+              const questions = store.listQuestions(String(course.id), { limit: 1000 }).questions.map(q => q.id === question.id ? question : q.payload);
+              if (!current || expectedRevision === undefined) throw new Error("After saving, only existing questions can be edited. Start a new complete build to add questions.");
+              result = store.saveCourseBuild(String(course.id), { questions }, { id: question.id, expectedRevision });
+            }
           } else if (call.function.name === "record_question_review") {
             const questionId = String(args.questionId);
+            if (stagedQuestions.has(questionId)) throw new Error("Commit staged questions before recording their QA.");
             const revision = z.number().int().min(1).parse(args.expectedRevision);
             result = store.reviewQuestion(String(course.id), questionId, revision, reviewEvidence.validate(questionId, revision, args.review), "local-model");
           } else if (call.function.name === "get_course") {
@@ -219,7 +233,8 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
             debug.outcome(job.id, "run_subagent", Boolean(specialist.content), createHash("sha256").update(String(result)).digest("hex"));
           } else if (call.function.name === "save_course_build") {
             const chapters = Array.isArray(args.chapters) ? args.chapters : [];
-            const questions = Array.isArray(args.questions) ? args.questions : [];
+            const questions = args.questions === undefined ? [...stagedQuestions.values()] : Array.isArray(args.questions) ? args.questions : [];
+            if (course.videoUrl && !store.getTranscript(String(course.id)).cues.length) throw new Error("Acquire the video transcript before authoring artifacts.");
             const conceptGraph = args.conceptGraph && typeof args.conceptGraph === "object" && !Array.isArray(args.conceptGraph) ? args.conceptGraph : null;
             if (!chapters.length || !questions.length) throw new Error("The agent tried to save an empty chapter or question collection.");
             if (!conceptGraph) throw new Error("The agent tried to save a course without its concept graph.");
@@ -233,6 +248,7 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
             }
             debug.outcome(job.id, "save_course_build", true);
             saved = true;
+            stagedQuestions.clear();
             result = { ...result as Record<string, unknown>, next: "Course saved. Optionally record_question_review for exact saved revisions, or return a final summary. Unreviewed questions remain marked with an asterisk." };
           } else {
             result = { error: `Unknown tool ${call.function.name}.` };
@@ -277,7 +293,8 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
   };
   const corsHeaders = (request: Request) => {
     const origin = request.headers.get("origin");
-    const allowedOrigins = (process.env.VIDMARK_ALLOWED_ORIGINS ?? "http://127.0.0.1:3010,http://localhost:3010").split(",");
+    const appPort = Number(process.env.VIDMARK_APP_PORT ?? 3010);
+    const allowedOrigins = (process.env.VIDMARK_ALLOWED_ORIGINS ?? `http://127.0.0.1:${appPort},http://localhost:${appPort}`).split(",");
     const allowed = origin && allowedOrigins.includes(origin) ? origin : allowedOrigins[0];
     return { "Access-Control-Allow-Origin": allowed, "Access-Control-Allow-Methods": "GET, PUT, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type" };
   };
@@ -362,7 +379,7 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
         if (request.method === "POST" && /^\/build\/[^/]+\/cancel$/.test(url.pathname)) {
           const id = url.pathname.split("/")[2];
           const controller = cancellations.get(id);
-          if (!controller) throw new Error("No running build was found.");
+          if (!buildJobs.has(id) || !controller) throw new Error("No running build was found.");
           controller.abort();
           return Response.json({ ok: true }, { headers });
         }

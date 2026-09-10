@@ -1,5 +1,6 @@
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +24,8 @@ export function createQuestionFactCheck(store: VidmarkDatabase, courseId: string
   const course = store.getCourse(courseId);
   if (!question || question.archived || !course) throw new Error("Question not found.");
   if (question.contentHash !== expectedHash) throw new Error("This question changed. Refresh it before starting a fact check.");
+  const transcript = course.transcript;
+  const transcriptHash = createHash("sha256").update(JSON.stringify(transcript)).digest("hex");
   let active = true, read = false, review: QuestionReview | undefined;
   const evidence = new Set<string>();
   const ensureActive = () => { if (!active) throw new Error("This fact check has ended."); };
@@ -44,9 +47,9 @@ export function createQuestionFactCheck(store: VidmarkDatabase, courseId: string
         read = true;
         result = { ...question, qaReview: undefined, course: { title: course.title, sourceUrl: course.sourceUrl, videoUrl: course.videoUrl } };
       } else if (name === "get_transcript") {
-        const cues = store.getTranscript(courseId, undefined, 100000).cues;
+        const cues = transcript;
         const offset = args.offset as number, page = cues.slice(offset, offset + (args.limit as number));
-        const evidenceId = `transcript:${courseId}:${offset}-${offset + page.length}`;
+        const evidenceId = `transcript:${courseId}:${transcriptHash}:${offset}-${offset + page.length}`;
         if (page.length) evidence.add(evidenceId);
         result = { evidenceId, total: cues.length, offset, cues: page };
       } else if (name === "fetch_url") {
@@ -101,7 +104,8 @@ export async function runQuestionFactCheck(job: FactCheckJob, preferences: Agent
   try {
     update("Checking provider", "Preparing a factual review. Question content will not be edited.");
     const id = preferences.harness;
-    const harness = id !== "provider" ? await dependencies.discoverHarness(id) : null;
+    const harness = id !== "provider" ? await dependencies.discoverHarness(id, undefined, signal) : null;
+    signal.throwIfAborted();
     if (harness && (harness.status !== "ready" || !harness.executable)) throw new Error(harness.detail);
     if (id === "provider" && !local) throw new Error("Configure an agent in Settings first.");
     const model = id === "provider" ? local!.model : resolveAgentModel(preferences.models[id], harness!);
