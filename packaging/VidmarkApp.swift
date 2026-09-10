@@ -84,12 +84,19 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         stopServer()
     }
 
+    @objc private func openAppSettings() {
+        guard isAuthenticated else { beginAuthentication(); return }
+        window.makeKeyAndOrderFront(nil)
+        webView.evaluateJavaScript("window.dispatchEvent(new Event('vidmark:open-settings'))", completionHandler: nil)
+    }
+
     private func buildMenu() {
         let mainMenu = NSMenu()
         let appMenuItem = NSMenuItem()
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Vidmark", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Settings…", action: #selector(openAppSettings), keyEquivalent: ",")
         let checkForUpdatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
         checkForUpdatesItem.target = updaterController
         appMenu.addItem(checkForUpdatesItem)

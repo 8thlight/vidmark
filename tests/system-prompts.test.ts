@@ -17,7 +17,7 @@ describe("local system prompt overrides", () => {
   });
   test("lists every model instruction with its built-in default", () => {
     const prompts = listSystemPromptSettings();
-    expect(prompts.map((prompt) => prompt.id)).toEqual(["courseBuilderMaster", "coordinatorRuntime", "coordinatorContinue", "specialist", "connectionProbe"]);
+    expect(prompts.map((prompt) => prompt.id)).toEqual(["questionFactCheck", "artifactContract", "cliCoordinator", "courseBuilderMaster", "coordinatorRuntime", "coordinatorContinue", "specialist", "connectionProbe"]);
     expect(prompts.every((prompt) => !prompt.overridden && prompt.defaultValue === prompt.effectiveValue)).toBe(true);
   });
 

@@ -7,6 +7,8 @@ import { chapterVideos, webUrl, youtubeId } from "../app/course-source";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ExamMode } from "../app/exam-mode";
+import { CourseChapters } from "../app/course-chapters";
+import type { ExamQuestion } from "../app/exam-data";
 
 const root = await mkdtemp(join(tmpdir(), "vidmark-reading-test-"));
 const db = new VidmarkDatabase(join(root, "alice.sqlite"));
@@ -22,10 +24,10 @@ test("non-video courses persist their source without fabricating a YouTube URL",
 });
 
 test("chapters preserve multiple optional videos through sharing", () => {
-  db.replaceChapters("reading-course", [{ id: "intro", title: "Introduction", videos: [
+  db.replaceChapters("reading-course", [{ id: "intro", title: "Introduction", summary: "Introduction summary", videos: [
     { title: "One", url: "https://www.youtube.com/watch?v=reDRM0tqhNs", startSeconds: 47 },
     { title: "Two", url: "https://example.com/lesson.mp4" },
-  ] }, { id: "practice", title: "Reading and practice" }]);
+  ] }, { id: "practice", title: "Reading and practice", summary: "Practice summary" }]);
   const imported = peer.importCourseBundle(db.exportCourseBundle("reading-course"));
   expect(imported?.videoUrl).toBe("");
   expect(imported?.sourceUrl).toBe("https://example.com/course");
@@ -35,7 +37,7 @@ test("chapters preserve multiple optional videos through sharing", () => {
 
 test("invalid media is rejected before replacing existing chapters", () => {
   const before = db.listChapters("reading-course");
-  expect(() => db.replaceChapters("reading-course", [{ id: "bad", videos: [{ title: "Bad", url: "javascript:alert(1)" }] }])).toThrow("HTTP(S)");
+  expect(() => db.replaceChapters("reading-course", [{ id: "bad", title: "Bad", summary: "Invalid media", videos: [{ title: "Bad", url: "javascript:alert(1)" }] }])).toThrow("HTTP(S)");
   expect(db.listChapters("reading-course")).toEqual(before);
   expect(() => chapterVideos([{ title: "Invalid time", url: "https://example.com/video", startSeconds: -1 }])).toThrow("non-negative");
 });
@@ -97,4 +99,15 @@ test("source-only imports never interpret an eleven-character course ID as a vid
   const imported = peer.importCourseBundle({ course: { id: "readingtest", title: "Reading", sourceUrl: "https://example.com/reading" } });
   expect(imported?.videoUrl).toBe("");
   expect(imported?.sourceUrl).toBe("https://example.com/reading");
+});
+
+test("course chapters reuse the chapter list layout and preserve numbering when filtered", () => {
+  const chapters = [{ id: "one", title: "Introduction", summary: "First chapter" }, { id: "two", title: "Practice", summary: "Second chapter", content: "Original lesson content", learningObjectives: ["Apply the concept"], sourceUrl: "https://example.com/source", videos: [{ title: "Supporting lesson", url: "https://youtu.be/reDRM0tqhNs" }] }];
+  const html = renderToStaticMarkup(createElement(CourseChapters, { chapters, query: "Practice", onNotes: () => {}, onPractice: () => {}, questionBank: [{ sectionId: "two" }] as ExamQuestion[] }));
+  expect(html).toContain('class="chapter-list"'); expect(html).toContain('class="chapter-row reading-chapter-row"');
+  expect(html).toContain('class="chapter-index">02</span>'); expect(html).not.toContain('class="chapter-index">01</span>');
+  expect(html).toContain("Original lesson content"); expect(html).toContain("Apply the concept");
+  expect(html).toContain("Take notes"); expect(html).toContain("Practice 1 question"); expect(html).not.toContain("Practice 1 questions");
+  expect(html).toContain('href="https://example.com/source"'); expect(html).toContain("Supporting lesson");
+  expect(html).not.toContain("new-notebook"); expect(html).not.toContain("SQLite");
 });

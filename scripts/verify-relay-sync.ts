@@ -67,7 +67,7 @@ try {
 
   const collaborationVideoId = crypto.randomUUID().replaceAll("-", "").slice(0, 11);
   aliceStore.upsertCourse({ id: collaborationVideoId, title: "Agentic Collaboration Test", source: "Vidmark QA", videoUrl: `https://www.youtube.com/watch?v=${collaborationVideoId}`, originPrompt: "Verify complete course collaboration.", promptCredit: "Vidmark QA" });
-  aliceStore.upsertQuestion(collaborationVideoId, { id: "collab-q1", question: "Which version is global?", correctAnswer: "A", options: { A: { text: "The locked registry snapshot", rationale: "It is addressable by video ID." } } });
+  aliceStore.upsertQuestion(collaborationVideoId, { ...aliceStore.listQuestions(STARTER_COURSE_ID, { limit: 1 }).questions[0]!.payload, id: "collab-q1", question: "Which version is global?" });
   aliceStore.saveConceptGraph(collaborationVideoId, {
     schemaVersion: "1.0.0",
     graphId: "collaboration-test-graph",

@@ -1,4 +1,12 @@
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
+import { buildRequirementsSchema, chapterSchema, questionReviewSchema, validateQuestion, type BuildRequirements } from "./course-artifacts";
+import type { QuestionReview } from "../app/question-review";
+
+const contentHash = (payload: Record<string, unknown>) => {
+  const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
+  return createHash("sha256").update(JSON.stringify(canonical(payload))).digest("hex");
+};
 import { chapterVideos, webUrl, youtubeId } from "../app/course-source";
 import bundledConceptGraph from "../data/concept-graph.json";
 import questionBank from "../data/question-bank.json";
@@ -25,6 +33,8 @@ export type QuestionRecord = {
   revision: number;
   archived: boolean;
   payload: Record<string, unknown>;
+  qaReview: QuestionReview | null;
+  contentHash: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -143,6 +153,8 @@ export class VidmarkDatabase {
     this.db = new Database(path, { create: true, strict: true });
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
     this.migrate();
+    this.db.exec(`CREATE TABLE IF NOT EXISTS question_reviews (course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE, question_id TEXT NOT NULL, payload_hash TEXT NOT NULL, review_json TEXT NOT NULL, PRIMARY KEY(course_id,question_id));
+      CREATE TABLE IF NOT EXISTS course_build_requirements (course_id TEXT PRIMARY KEY REFERENCES courses(id) ON DELETE CASCADE, payload_json TEXT NOT NULL);`);
     this.seedBundledQuestionBank();
     this.dismissRedundantQuestionSuggestions();
   }
@@ -391,6 +403,84 @@ export class VidmarkDatabase {
     return this.db.transaction(() => this.writeCourse(input))();
   }
 
+  setBuildRequirements(courseId: string, input: BuildRequirements) {
+    if (!this.getCourse(courseId)) throw new Error("Course not found.");
+    const requirements = buildRequirementsSchema.parse(input);
+    this.db.query("INSERT INTO course_build_requirements VALUES (?,?) ON CONFLICT(course_id) DO UPDATE SET payload_json=excluded.payload_json").run(courseId, json(requirements));
+    return requirements;
+  }
+
+  getBuildRequirements(courseId: string): BuildRequirements {
+    const row = this.db.query("SELECT payload_json FROM course_build_requirements WHERE course_id=?").get(courseId) as { payload_json: string } | null;
+    return row ? parseJson(row.payload_json, {}) : {};
+  }
+
+  saveCourseBuild(courseId: string, input: { studyGuide?: string; researchNotes?: string; chapters?: unknown[]; questions?: unknown[]; conceptGraph?: unknown }) {
+    return this.db.transaction(() => {
+      const course = this.getCourse(courseId);
+      if (!course) throw new Error("Course not found.");
+      const chapters = input.chapters?.map(chapter => chapterSchema.parse(chapter));
+      const questions = input.questions?.map(validateQuestion);
+      const graph = input.conceptGraph === undefined ? undefined : validateConceptGraph(input.conceptGraph);
+      const requirements = this.getBuildRequirements(courseId);
+      if (questions && !this.db.query("SELECT 1 FROM course_build_requirements WHERE course_id=?").get(courseId)) throw new Error("Call set_course_build_requirements before replacing the question bank. Record the requested count and coverage, or an empty requirements object if none were specified. QA is not required.");
+      if (chapters && !chapters.length) throw new Error("A chapter replacement cannot be empty.");
+      if (questions && !questions.length) throw new Error("A question replacement cannot be empty.");
+      if (chapters && new Set(chapters.map(c => c.id)).size !== chapters.length) throw new Error("Chapter IDs must be unique.");
+      if (questions) {
+        if (requirements.questionCount && questions.length !== requirements.questionCount) throw new Error(`Expected ${requirements.questionCount} questions, received ${questions.length}. No artifacts saved.`);
+        if (new Set(questions.map(q => q.id)).size !== questions.length) throw new Error("Question IDs must be unique.");
+        if (new Set(questions.map(q => q.question.toLowerCase().replace(/\\s+/g, " ").trim())).size !== questions.length) throw new Error("Duplicate question text.");
+        const chapterIds = new Set((chapters ?? course.chapters).map(c => String(c.id)));
+        for (const q of questions) {
+          if (!chapterIds.has(q.sectionId)) throw new Error(`Question ${q.id} references an unknown chapter.`);
+          if (!q.sources.length && !q.videoReferences.length) throw new Error(`Question ${q.id} requires source or transcript evidence.`);
+          const lastCue = (course.transcript as Array<{ time: number }>).at(-1)?.time;
+          if (q.videoReferences.length && (!course.videoUrl || lastCue === undefined)) throw new Error("Video references require an acquired transcript.");
+          if (q.videoReferences.some(ref => ref.timestampSeconds > Number(lastCue) + 30)) throw new Error(`Question ${q.id} has a timestamp outside the transcript.`);
+        }
+        for (const id of requirements.chapterIds ?? []) if (!questions.some(q => q.sectionId === id)) throw new Error(`No question covers required chapter ${id}.`);
+      }
+      this.upsertCourse({ id: courseId, title: String(course.title), studyGuide: input.studyGuide, researchNotes: input.researchNotes });
+      if (chapters) this.replaceChapters(courseId, chapters);
+      if (questions) this.replaceQuestions(courseId, questions);
+      if (graph) this.saveConceptGraph(courseId, graph);
+      return { saved: courseId, chapters: chapters?.length, questions: questions?.length, revision: this.getCourse(courseId)?.revision, unreviewed: this.listQuestions(courseId, { limit: 1000 }).questions.filter(q => q.qaReview?.outcome !== "reviewed").length };
+    })();
+  }
+
+  reviewQuestion(courseId: string, questionId: string, expectedRevision: number, input: unknown, via: QuestionReview["via"]) {
+    return this.db.transaction(() => {
+      const question = this.getQuestion(courseId, questionId);
+      if (!question || question.revision !== expectedRevision) throw new Error("Question revision changed. Read it again before recording QA.");
+      const checked = questionReviewSchema.parse(input);
+      if (checked.contentHash !== contentHash(question.payload)) throw new Error("Question content changed. Read it again before recording QA.");
+      const review: QuestionReview = { ...checked, reviewedAt: now(), contentHash: contentHash(question.payload), via };
+      this.db.query("INSERT INTO question_reviews VALUES (?,?,?,?) ON CONFLICT(course_id,question_id) DO UPDATE SET payload_hash=excluded.payload_hash,review_json=excluded.review_json").run(courseId, questionId, review.contentHash, json(review));
+      this.touchCourse(courseId);
+      this.log("review", "question", questionId, { courseId, review, revision: expectedRevision, question: question.payload });
+      return this.getQuestion(courseId, questionId);
+    })();
+  }
+
+  getQuestionReviews(courseId: string, questionId: string): Array<Record<string, unknown> & { recordedAt: number }> {
+    return (this.db.query("SELECT details_json,created_at FROM activity_log WHERE entity_type='question' AND action='review' AND entity_id=? AND json_extract(details_json,'$.courseId')=? ORDER BY created_at DESC LIMIT 50").all(questionId, courseId) as Array<{ details_json: string; created_at: number }>).map(row => ({ ...parseJson<Record<string, unknown>>(row.details_json, {}), recordedAt: row.created_at }));
+
+  }
+
+  syncBrowserCourses(courses: CourseInput[], activeCourseId?: string) {
+    this.db.transaction(() => {
+      // Browser snapshots may lag behind MCP writes. Only seed missing records;
+      // existing content is changed exclusively through explicit write actions.
+      for (const course of courses) {
+        if (!this.db.query("SELECT 1 FROM courses WHERE id=?").get(course.id)) this.writeCourse(course);
+      }
+      if (activeCourseId && this.db.query("SELECT 1 FROM courses WHERE id=?").get(activeCourseId)) {
+        this.db.query("UPDATE courses SET active=(id=?) WHERE active=1 OR id=?").run(activeCourseId, activeCourseId);
+      }
+    })();
+  }
+
   private writeCourse(input: CourseInput & { active?: boolean }) {
     const existing = this.db.query("SELECT * FROM courses WHERE id = ?").get(input.id) as Record<string, unknown> | null;
     const timestamp = now();
@@ -477,7 +567,7 @@ export class VidmarkDatabase {
   replaceChapters(courseId: string, chapters: unknown[]) {
     const normalized = chapters.map((chapter) => {
       if (!chapter || typeof chapter !== "object" || Array.isArray(chapter)) throw new Error("Each chapter must be an object.");
-      const value = chapter as Record<string, unknown>;
+      const value = chapterSchema.parse(chapter);
       return { ...value, videos: chapterVideos(value.videos) };
     });
     this.prepareCourseMutation(courseId);
@@ -499,14 +589,21 @@ export class VidmarkDatabase {
   }
 
   replaceQuestions(courseId: string, questions: unknown[]) {
+    questions = questions.map(validateQuestion);
+    if (new Set(questions.map(q => (q as { id: string }).id)).size !== questions.length) throw new Error("Question IDs must be unique.");
     this.prepareCourseMutation(courseId);
     const timestamp = now();
+    const prior = new Map(this.listQuestions(courseId, { limit: 1000, includeArchived: true }).questions.map(q => [q.id, q]));
     this.db.transaction(() => {
       this.db.query("DELETE FROM questions WHERE course_id=?").run(courseId);
       const insert = this.db.query("INSERT INTO questions(course_id,id,position,payload_json,revision,archived,created_at,updated_at) VALUES (?,?,?,?,1,0,?,?)");
       questions.forEach((question, index) => {
         const value = question && typeof question === "object" ? question as Record<string, unknown> : { value: question };
-        insert.run(courseId, String(value.id ?? value.bankId ?? `question-${index + 1}`), index, json(value), timestamp, timestamp);
+        const id = String(value.id ?? value.bankId ?? `question-${index + 1}`);
+        const previous = prior.get(id);
+        if (!previous || contentHash(previous.payload) !== contentHash(value)) this.db.query("DELETE FROM question_reviews WHERE course_id=? AND question_id=?").run(courseId, id);
+        insert.run(courseId, id, index, json(value), previous?.createdAt ?? timestamp, timestamp);
+        if (previous) this.db.query("UPDATE questions SET revision=? WHERE course_id=? AND id=?").run(previous.revision + 1, courseId, id);
       });
       this.touchCourse(courseId);
     })();
@@ -530,10 +627,12 @@ export class VidmarkDatabase {
   }
 
   upsertQuestion(courseId: string, payload: Record<string, unknown>, expectedRevision?: number, position?: number) {
+    payload = validateQuestion(payload);
     const questionId = String(payload.id ?? payload.bankId ?? "").trim();
     if (!questionId) throw new Error("Question id is required.");
     const existing = this.getQuestion(courseId, questionId);
     if (expectedRevision !== undefined && existing && existing.revision !== expectedRevision) throw new Error(`Revision conflict: expected ${expectedRevision}, current revision is ${existing.revision}.`);
+    if (!existing || contentHash(existing.payload) !== contentHash({ ...payload, id: questionId })) this.db.query("DELETE FROM question_reviews WHERE course_id=? AND question_id=?").run(courseId, questionId);
     this.prepareCourseMutation(courseId);
     const timestamp = now();
     const nextPosition = position ?? existing?.position ?? Number((this.db.query("SELECT COALESCE(MAX(position),-1)+1 next FROM questions WHERE course_id=?").get(courseId) as { next: number }).next);
@@ -545,12 +644,12 @@ export class VidmarkDatabase {
     return this.getQuestion(courseId, questionId);
   }
 
-  patchQuestion(courseId: string, questionId: string, patch: Record<string, unknown>, expectedRevision?: number) {
+  patchQuestion(courseId: string, questionId: string, patch: Record<string, unknown>, expectedRevision?: number, validate = false) {
     const existing = this.getQuestion(courseId, questionId);
     if (!existing) throw new Error(`Question ${questionId} was not found.`);
     if (expectedRevision !== undefined && existing.revision !== expectedRevision) throw new Error(`Revision conflict: expected ${expectedRevision}, current revision is ${existing.revision}.`);
     const merged = mergePatch(existing.payload, patch) as Record<string, unknown>;
-    return this.upsertQuestion(courseId, { ...merged, id: questionId }, existing.revision, existing.position);
+    return this.upsertQuestion(courseId, validate ? validateQuestion({ ...merged, id: questionId }) : { ...merged, id: questionId }, existing.revision, existing.position);
   }
 
   archiveQuestion(courseId: string, questionId: string, expectedRevision?: number) {
@@ -646,6 +745,17 @@ export class VidmarkDatabase {
     if (Array.isArray(course.transcript)) this.replaceTranscript(id, course.transcript as Array<{ time: number; text: string }>);
     if (Array.isArray(course.chapters)) this.replaceChapters(id, course.chapters);
     if (questions.length) this.replaceQuestions(id, questions);
+    // Shared QA is an attributed report, never a fresh local verification.
+    for (const item of Array.isArray(course.questions) ? course.questions : []) {
+      if (!item || typeof item !== "object") continue;
+      const record = item as { id?: string; qaReview?: QuestionReview };
+      const candidate = record.qaReview;
+      const parsed = questionReviewSchema.safeParse(candidate);
+      const savedQuestion = record.id ? this.getQuestion(id, record.id) : null;
+      if (candidate && parsed.success && savedQuestion?.contentHash === candidate.contentHash && (candidate.via === "mcp" || candidate.via === "local-model") && Number.isFinite(candidate.reviewedAt)) {
+        this.db.query("INSERT INTO question_reviews VALUES (?,?,?,?) ON CONFLICT(course_id,question_id) DO UPDATE SET payload_hash=excluded.payload_hash,review_json=excluded.review_json").run(id, record.id!, candidate.contentHash, json({ ...parsed.data, via: candidate.via, reviewedAt: candidate.reviewedAt, shared: true }));
+      }
+    }
     if (course.conceptGraph) this.saveConceptGraph(id, course.conceptGraph);
     this.db.query("UPDATE courses SET visibility=?,global_version=?,global_owner_device_id=?,forked_from_version=?,global_locked=? WHERE id=?")
       .run(options.visibility ?? "private", options.globalVersion ?? null, options.globalOwnerDeviceId ?? null, options.globalVersion ?? null, options.globalLocked ? 1 : 0, id);
@@ -747,7 +857,10 @@ export class VidmarkDatabase {
   private touchCourse(courseId: string) { this.db.query("UPDATE courses SET revision=revision+1,updated_at=? WHERE id=?").run(now(), courseId); }
 
   private questionFromRow(row: Record<string, unknown>): QuestionRecord {
-    return { courseId: String(row.course_id), id: String(row.id), position: Number(row.position), revision: Number(row.revision), archived: Boolean(row.archived), payload: parseJson<Record<string, unknown>>(row.payload_json, {}), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
+    const payload = parseJson<Record<string, unknown>>(row.payload_json, {});
+    const stored = this.db.query("SELECT payload_hash,review_json FROM question_reviews WHERE course_id=? AND question_id=?").get(String(row.course_id), String(row.id)) as { payload_hash: string; review_json: string } | null;
+    const qaReview = stored?.payload_hash === contentHash(payload) ? parseJson<QuestionReview | null>(stored.review_json, null) : null;
+    return { contentHash: contentHash(payload), qaReview, courseId: String(row.course_id), id: String(row.id), position: Number(row.position), revision: Number(row.revision), archived: Boolean(row.archived), payload: parseJson<Record<string, unknown>>(row.payload_json, {}), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
   }
 
   private suggestionFromRow(row: Record<string, unknown>): SuggestionRecord {

@@ -8,6 +8,8 @@ Ground yourself first.
 
 Before creating course material, read the course record and required course-specific prompt with Vidmark’s get_course tool, inspect sourceUrl and videoUrl. For a non-video course, read its sourceUrl and authorized supporting sources; no transcript or invented timestamps are required. If the source is only a program overview, research supporting primary resources and fulfill the requested learning and assessment scope with original, source-grounded material. Do not downgrade a requested exam-preparation course into an orientation-only notebook. Distinguish original practice from official assessment items, unpublished curriculum, or certificate-granting requirements. For a video course, call get_transcript. If that video course has no transcript cues, call acquire_course_transcript before doing any chapter, study-guide, or assessment work. That tool retrieves/scrapes an available public caption track from the course’s YouTube video, preserves its timestamps, and saves it to Vidmark with replace_transcript semantics. Prefer creator-provided captions in the requested language; clearly record whether the selected track is automatically generated. Do not bypass authentication, paywalls, access controls, or unavailable captions. If public captions cannot be acquired, stop and tell the user that a transcript must be provided instead of inventing one.
 
+Preserve the subject and identity established by the course title, source URL and actual source material. Caption spelling errors are not proof that a different product is being taught. Preserve raw captions and document any interpretation of ambiguous terms. Do not rename a course, invent a "corrected edition", or turn it into a debunking course unless the user requests that scope. Verify unfamiliar product names and current availability against successfully retrieved primary sources; your training cutoff is not evidence that something is fictional or retired. Never embed a fixed catalog of model names in instructions or specialist tasks. Describe required capabilities and obtain current names from source evidence or provider discovery. Distinguish historical API names from current products. A failed fetch is missing evidence, not proof a claim is false.
+
 Treat the course-specific prompt as authoritative context for audience, goals, scope, emphasis, assessment style, and any additional sources. Research current technical claims against primary documentation. Do not write from memory alone. Record transcript acquisition details, source URLs, titles, access dates, version assumptions, and conflicts.
 
 Course format.
@@ -28,11 +30,11 @@ Question format.
 • Explain why the correct answer is correct and why every distractor is wrong.
 • Name the underlying principle or decision rule.
 • Attach a transcript timestamp when the source supports the answer and a current authoritative citation for externally verified claims.
-• Reject ambiguous or unsupported questions.
+• Flag ambiguous or unsupported questions as unreviewed or needing changes; never present an unsupported answer key as verified.
 
 Research and verification.
 
-Verify every factual question and answer. Prefer primary sources over summaries or search-result snippets. Distinguish what the video says from what current documentation says. Surface conflicts instead of hiding them. Never fabricate transcript text, timestamps, screenshots, citations, commands, or results.
+Review factual questions and answers when possible; QA is optional and must be explicitly recorded for each question version. Prefer primary sources over summaries or search-result snippets. Distinguish what the video says from what current documentation says. Surface conflicts instead of hiding them. Never fabricate transcript text, timestamps, screenshots, citations, commands, or results.
 
 Agent workflow.
 
@@ -40,7 +42,7 @@ Use separate bounded subagents when the connected agent supports them: transcrip
 
 Save and handoff.
 
-Read existing artifacts before replacing them. Merge outputs only after QA, preserve citations and timestamps, and save the final study guide, research notes, chapter array, question array, and concept graph with Vidmark’s save_course_build tool. Return a concise build report listing completed artifacts, unresolved issues, source conflicts, and rejected questions.
+Read existing artifacts before replacing them. Record the requested quantity and coverage with set_course_build_requirements. Save the study guide, research notes, chapter array, question array, and concept graph with save_course_build; use upsert_course_question for incremental authoring to avoid oversized tool calls. Use the exact tool JSON schema, not an alternative Markdown or simplified JSON format. Every A/B/C/D option needs its own rationale. Questions without QA may be saved and will show an asterisk. After a review, call record_question_review with the saved question revision, reviewer attribution, findings, and evidence. Mark needs_changes when issues remain. Never mark all questions reviewed merely because generation completed. Saving does not certify accuracy. Return a concise build report listing completed artifacts, unresolved issues, source conflicts, and rejected questions.
 
 Honesty rules.
 
@@ -137,7 +139,7 @@ You are the coordinator and MUST delegate bounded work to separate subagents. Do
 
 Save and handoff.
 
-Merge subagent outputs only after independent QA. Preserve citations, timestamps, subagent ownership, and QA status on the artifacts. Save the final study guide, research notes, chapter array, and question array with Vidmark’s save_course_build tool. Chapter and question payloads must be valid JSON arrays.
+Merge subagent outputs while preserving any unresolved QA findings. Unreviewed questions may be saved and must retain their asterisk until a review is recorded. Preserve citations, timestamps, subagent ownership, and QA status on the artifacts. Save the final study guide, research notes, chapter array, and question array with Vidmark’s save_course_build tool. Chapter and question payloads must be valid JSON arrays.
 
 Honesty rules.
 

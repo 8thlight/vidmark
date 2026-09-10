@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, X } from "lucide-react";
+import { X } from "lucide-react";
 import { applyQuestionPatch, questionPayloadChanges, questionValuesEqual } from "./question-diff";
 import type { QuestionSuggestion, StoredQuestion, SyncPreferences } from "./vidmark-client";
 
@@ -34,14 +34,14 @@ function QuestionColumn({ title, subtitle, value, other, tone }: { title: string
   </section>;
 }
 
-export function QuestionDiffReview({ suggestion, current, preferences, loading, onClose, onDismiss, onImport, onPreferencesChange }: { suggestion: QuestionSuggestion; current: StoredQuestion | null; preferences: SyncPreferences; loading: boolean; onClose: () => void; onDismiss: () => void; onImport: () => void; onPreferencesChange: (next: SyncPreferences) => void }) {
+export function QuestionDiffReview({ suggestion, current, preferences, loading, onClose, onDismiss, onImport }: { suggestion: QuestionSuggestion; current: StoredQuestion | null; preferences: SyncPreferences; loading: boolean; onClose: () => void; onDismiss: () => void; onImport: () => void; onPreferencesChange: (next: SyncPreferences) => void }) {
   const before = payload(current?.payload);
   const proposed = payload(suggestion.proposedPatch);
   const incoming = suggestion.kind === "update" && current ? payload(applyQuestionPatch(before as Record<string, unknown>, proposed as Record<string, unknown>)) : proposed;
   const changes = questionPayloadChanges(before as Record<string, unknown>, incoming as Record<string, unknown>);
   const duplicate = Boolean(current) && changes.length === 0;
   const author = suggestion.authorProfile?.name ?? "A Vidmark user";
-  const updatePreference = async (checked: boolean) => onPreferencesChange({ ...preferences, autoImportQuestions: checked });
+
   return <dialog open className="modal-backdrop question-diff-backdrop" aria-label="Review question update">
     <section className="question-diff-modal">
       <header className="question-diff-head"><div><h2>Review question update</h2><p>From {author} · {new Date(suggestion.createdAt).toLocaleString()}</p></div><button type="button" aria-label="Close question review" onClick={onClose}><X aria-hidden="true" /></button></header>
@@ -50,7 +50,7 @@ export function QuestionDiffReview({ suggestion, current, preferences, loading, 
         <QuestionColumn title="Your version" subtitle={current ? `Revision ${current.revision}` : "Not in your library"} value={before} other={incoming} tone="removed" />
         <QuestionColumn title="Incoming version" subtitle={`From ${author}`} value={incoming} other={before} tone="added" />
       </div>
-      <label className="auto-import-setting"><span><b>Automatically import shared questions</b><small>Off by default. When enabled, future questions and answers shared directly with you are imported without review.</small></span><input type="checkbox" checked={preferences.autoImportQuestions} onChange={(event) => void updatePreference(event.target.checked)} /><i aria-hidden="true"><Check /></i></label>
+      <p>Automatic question imports are {preferences.autoImportQuestions ? "on" : "off"}. Change this in Settings → Imports.</p>
       <footer><button type="button" disabled={loading} onClick={duplicate ? onDismiss : onClose}>{duplicate ? "Dismiss duplicate" : "Not now"}</button><button className="import-question" type="button" disabled={loading || duplicate} onClick={onImport}>{duplicate ? "No changes to import" : loading ? "Importing…" : "Import question"}</button></footer>
     </section>
   </dialog>;
