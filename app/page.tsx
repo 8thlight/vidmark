@@ -12,13 +12,16 @@ import { readNotes, StudyNote } from "./notes-store";
 import { VoiceNote, VoiceNotePlaylist } from "./voice-note";
 import { avatarDataUri, ProfileOnboarding } from "./profile-onboarding";
 import { StudyPeers, type CollaborationTab } from "./study-peers";
-import { getCourseQuestions, getLocalCourse, getLocalCourses, getPeerNotes, getProfile, getSystemPrompts, shareStudyNote, type LearnerProfile } from "./vidmark-client";
+import { createLocalCourse, getCourseQuestions, getLocalCourse, getLocalCourses, getPeerNotes, getProfile, getSystemPrompts, shareStudyNote, type LearnerProfile } from "./vidmark-client";
+
+import { webUrl, youtubeId } from "./course-source";
+import { CourseChapters } from "./course-chapters";
 
 type Chapter = { title: string; start: number; duration: string; summary: string; tags: string[] };
 type Note = { time: number; title: string; text: string; chapter: string; image?: string; kind: "concept" | "lab" | "exam" };
 const VIDEO_ID = "reDRM0tqhNs";
 const KUBERNETES_VIDEO_ID = "_4uQI4ihGVU";
-type LibraryVideo = { id: string; title: string; source: string; originPrompt: string; promptCredit: string; transcript: TranscriptCue[]; studyGuide?: string; chapters?: Array<Record<string, unknown>>; questionCount?: number; conceptGraphRevision?: number | null };
+type LibraryVideo = { id: string; sourceKey?: string; sourceUrl?: string; videoUrl?: string; title: string; source: string; originPrompt: string; promptCredit: string; transcript: TranscriptCue[]; studyGuide?: string; chapters?: Array<Record<string, unknown>>; questionCount?: number; conceptGraphRevision?: number | null };
 type Choice = "A" | "B" | "C" | "D";
 type Answer = { questionId: number; selected: Choice; correct: boolean };
 const starterVideo: LibraryVideo = { id: VIDEO_ID, title: "Claude Certified Architect — Foundations", source: "freeCodeCamp.org", originPrompt: ccaFoundationsOriginPrompt, promptCredit: ccaFoundationsPromptCredit, transcript: [] };
@@ -105,6 +108,11 @@ export default function Home() {
   const [library, setLibrary] = useState<LibraryVideo[]>(bundledVideos);
   const [activeVideoId, setActiveVideoId] = useState(VIDEO_ID);
   const [newUrl, setNewUrl] = useState("");
+  const [newTitle, setNewTitle] = useState("");
+  const [addCourseError, setAddCourseError] = useState("");
+  const [addingCourse, setAddingCourse] = useState(false);
+  const [libraryLoaded, setLibraryLoaded] = useState(false);
+  const libraryInitialized = useRef(false);
   const [newPrompt, setNewPrompt] = useState("");
   const [newPromptCredit, setNewPromptCredit] = useState("");
   const [setupStatus, setSetupStatus] = useState("");
@@ -122,6 +130,7 @@ export default function Home() {
   const [helpedIds, setHelpedIds] = useState<number[]>([]);
   const [moreOpen, setMoreOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
+  const [readingChapterId, setReadingChapterId] = useState("");
   const [savedNotes, setSavedNotes] = useState<StudyNote[]>([]);
   const [mainMode, setMainMode] = useState<"course" | "notes" | "exam">("course");
   const [theme, setTheme] = useState<"light" | "dark">("light");
@@ -134,6 +143,8 @@ export default function Home() {
   const uploadRef = useRef<HTMLInputElement>(null);
   const notebookRef = useRef<HTMLElement>(null);
   const activeVideo = library.find((video) => video.id === activeVideoId) ?? starterVideo;
+  const primaryVideoId = youtubeId(activeVideo.videoUrl ?? (bundledVideoIds.has(activeVideo.id) ? activeVideo.id : ""));
+  const courseSourceUrl = webUrl(activeVideo.sourceUrl || activeVideo.videoUrl || (primaryVideoId ? `https://www.youtube.com/watch?v=${primaryVideoId}` : ""));
   const isStarter = activeVideo.id === VIDEO_ID;
   const isBundledCourse = bundledVideoIds.has(activeVideo.id);
   const sectionQuestionCounts = useMemo(() => chapterSectionIds.map((sectionId) => questionBank.filter((question) => question.sectionId === sectionId).length), [questionBank]);
@@ -142,7 +153,7 @@ export default function Home() {
     const summaries = await getLocalCourses();
     const records = await Promise.all(summaries.map((course) => getLocalCourse(course.id)));
     const synced = records.flatMap((course) => course ? [{
-      id: String(course.videoId ?? course.id), title: String(course.title), source: String(course.source ?? "YouTube"),
+      id: String(course.id), sourceKey: String(course.videoId ?? course.id), sourceUrl: String(course.sourceUrl ?? course.videoUrl ?? ""), videoUrl: String(course.videoUrl ?? ""), title: String(course.title), source: String(course.source ?? "YouTube"),
       originPrompt: String(course.coursePrompt ?? "Build a well-researched course from this video."), promptCredit: String(course.promptCredit ?? "Course creator"),
       transcript: Array.isArray(course.transcript) ? course.transcript as TranscriptCue[] : [],
       studyGuide: typeof course.studyGuide === "string" ? course.studyGuide : undefined,
@@ -150,6 +161,12 @@ export default function Home() {
       questionCount: Array.isArray(course.questions) ? course.questions.length : 0,
       conceptGraphRevision: typeof course.conceptGraphRevision === "number" ? course.conceptGraphRevision : null,
     }] : []);
+    if (!libraryInitialized.current) {
+      const active = records.find((course) => course?.active);
+      if (active) { setActiveVideoId(String(active.id)); setImported(Array.isArray(active.transcript) ? active.transcript as TranscriptCue[] : []); }
+      libraryInitialized.current = true;
+    }
+    setLibraryLoaded(true);
     const byId = new Map(synced.map((video) => [video.id, video]));
     setLibrary([...bundledVideos.map((video) => byId.get(video.id) ?? video), ...synced.filter((video) => !bundledVideoIds.has(video.id))]);
   }, []);
@@ -175,17 +192,6 @@ export default function Home() {
   useEffect(() => {
     const hydrateTimer = window.setTimeout(() => {
       try {
-        const saved = window.localStorage.getItem("vidmark-library");
-        if (saved) {
-        const parsed = (JSON.parse(saved) as Partial<LibraryVideo>[]).filter((video) => video.id);
-        const storedById = new Map(parsed.map((video) => [String(video.id), video]));
-        const bundled = bundledVideos.map((video) => ({ ...video, transcript: Array.isArray(storedById.get(video.id)?.transcript) ? storedById.get(video.id)!.transcript as TranscriptCue[] : [] }));
-        const stored = parsed.filter((video) => !bundledVideoIds.has(String(video.id))).map((video) => ({
-          id: String(video.id), title: video.title ?? `YouTube notebook · ${video.id}`, source: video.source ?? "YouTube",
-          originPrompt: video.originPrompt ?? "Build a well-researched course from this video.", promptCredit: video.promptCredit ?? "Course creator", transcript: Array.isArray(video.transcript) ? video.transcript : [],
-        }));
-        setLibrary([...bundled, ...stored]);
-        }
         if (window.localStorage.getItem("vidmark-theme") === "dark") setTheme("dark");
       } catch { /* Keep the bundled library and light theme when storage is unavailable. */ }
     }, 0);
@@ -204,15 +210,16 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (!libraryLoaded) return;
     const timer = window.setTimeout(() => {
       void syncMcpState(
-        library.map((video) => ({ ...video, videoUrl: `https://www.youtube.com/watch?v=${video.id}` })),
+        library.map((video) => ({ id: video.id, title: video.title, source: video.source, originPrompt: video.originPrompt, promptCredit: video.promptCredit, transcript: video.transcript, sourceUrl: video.sourceUrl, videoUrl: video.videoUrl ?? (bundledVideoIds.has(video.id) ? `https://www.youtube.com/watch?v=${video.id}` : "") })),
         savedNotes.filter((note) => !note.sharedFromPeer).map((note) => ({ id: note.id, courseId: note.courseId, chapterId: note.chapterId, chapterTitle: note.chapterTitle, text: note.text, source: note.source, updatedAt: note.updatedAt, hasAudio: Boolean(note.audio || note.audioUrl) })),
         activeVideoId,
       );
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [activeVideoId, library, savedNotes]);
+  }, [activeVideoId, library, libraryLoaded, savedNotes]);
 
   useEffect(() => {
     notebookRef.current?.scrollTo({ top: 0, behavior: "smooth" });
@@ -240,11 +247,12 @@ export default function Home() {
   const practiceQuestions = practiceScope === "full" ? questionBank : questionBank.filter((question) => question.sectionId === practiceScope);
   const activeQuestion = practiceQuestions[questionIndex] ?? bundledExamBank[0];
   const activeChapterIndex = chapterSectionIds.indexOf(activeQuestion.sectionId as (typeof chapterSectionIds)[number]);
-  const currentSection = chapters[activeChapterIndex] ?? chapters[0];
-  const currentChapterId = chapterSectionIds[activeChapterIndex] ?? chapterSectionIds[0];
+  const courseChapters = isStarter ? chapters.map((chapter, index) => ({ ...chapter, id: chapterSectionIds[index] })) : (activeVideo.chapters ?? []).map((chapter, index) => ({ id: String(chapter.id ?? `chapter-${index + 1}`), title: String(chapter.title ?? `Chapter ${index + 1}`), summary: String(chapter.summary ?? ""), start: Number(chapter.start ?? 0), duration: "", tags: [] as string[] }));
+  const currentSection = isStarter ? courseChapters[activeChapterIndex] ?? courseChapters[0] : courseChapters.find((chapter) => chapter.id === readingChapterId) ?? courseChapters[0] ?? { id: "unsorted", title: "Course notes", summary: "", start: 0, duration: "", tags: [] };
+  const currentChapterId = currentSection.id;
   const courseNotes = savedNotes.filter((note) => note.courseId === activeVideoId);
   const courseVoiceNotes = courseNotes.filter((note) => note.source === "voice");
-  const noteGroups = chapters.map((chapter, index) => ({ chapter, notes: courseNotes.filter((note) => note.chapterId === chapterSectionIds[index]) })).filter((group) => group.notes.length);
+  const noteGroups = courseChapters.map((chapter) => ({ chapter, notes: courseNotes.filter((note) => note.chapterId === chapter.id) })).filter((group) => group.notes.length);
   const unsortedNotes = courseNotes.filter((note) => note.chapterId === "unsorted");
   const scopedAnswers = answers.filter((answer) => practiceQuestions.some((question) => question.id === answer.questionId));
   const correctCount = scopedAnswers.filter((answer) => answer.correct).length;
@@ -272,6 +280,7 @@ export default function Home() {
   };
 
   const startFullBank = () => {
+    if (!questionBank.length) return;
     const savedAnswer = answers.find((answer) => answer.questionId === questionBank[0].id);
     setPracticeScope("full");
     setQuestionIndex(0);
@@ -348,29 +357,28 @@ export default function Home() {
     setView("transcript");
   };
 
-  const addVideo = () => {
-    const match = newUrl.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([\w-]{11})/);
-    if (!match || !newPrompt.trim() || !newPromptCredit.trim()) return;
-    const bundled = library.find((item) => item.id === match[1] && bundledVideoIds.has(item.id));
-    if (bundled) {
-      setActiveVideoId(bundled.id); setImported(bundled.transcript); setView("guide"); setActiveTime(0); setPlayerKey((key) => key + 1);
-      setNewUrl(""); setNewPrompt(""); setNewPromptCredit(""); setLibraryOpen(false);
-      return;
-    }
-    const video: LibraryVideo = { id: match[1], title: `YouTube notebook · ${match[1]}`, source: "YouTube", originPrompt: newPrompt.trim(), promptCredit: newPromptCredit.trim(), transcript: [] };
-    const next = [...library.filter((item) => item.id !== video.id), video];
-    persistLibrary(next);
-    setActiveVideoId(video.id);
-    setImported([]);
-    setView("transcript");
-    setActiveTime(0);
-    setPlayerKey((key) => key + 1);
-    setNewUrl(""); setNewPrompt(""); setNewPromptCredit("");
-    setLibraryOpen(false);
+  const addVideo = async () => {
+    const sourceUrl = webUrl(newUrl);
+    if (addingCourse || !sourceUrl || !newTitle.trim() || !newPrompt.trim() || !newPromptCredit.trim()) return;
+    setAddingCourse(true); setAddCourseError("");
+    try {
+    const videoId = youtubeId(sourceUrl);
+    const canonical = new URL(sourceUrl); canonical.hash = "";
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical.href));
+    const id = videoId || `web-${Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    const existing = library.find((item) => item.id === id || item.sourceUrl === sourceUrl);
+    if (existing) { selectVideo(existing); return; }
+    const video: LibraryVideo = { id, title: newTitle.trim(), source: new URL(sourceUrl).hostname, sourceUrl, videoUrl: videoId ? sourceUrl : "", originPrompt: newPrompt.trim(), promptCredit: newPromptCredit.trim(), transcript: [] };
+    await createLocalCourse({ id, title: video.title, source: video.source, sourceUrl, videoUrl: video.videoUrl ?? "", originPrompt: video.originPrompt, promptCredit: video.promptCredit });
+    persistLibrary([...library, video]);
+    setActiveVideoId(id); setImported([]); setView("guide"); setActiveTime(0);
+    setNewUrl(""); setNewTitle(""); setNewPrompt(""); setNewPromptCredit(""); setLibraryOpen(false);
+    } catch (error) { setAddCourseError(error instanceof Error ? error.message : "The course could not be saved. Keep Vidmark unlocked and try again."); }
+    finally { setAddingCourse(false); }
   };
 
   const selectVideo = (video: LibraryVideo) => {
-    setActiveVideoId(video.id); setImported(video.transcript); setActiveTime(video.id === VIDEO_ID ? 857 : 0); setView(video.studyGuide ? "guide" : video.id === VIDEO_ID ? "guide" : "transcript"); setPlayerKey((key) => key + 1); setSetupStatus(""); setBuildPromptOpen(false); setLibraryOpen(false);
+    setActiveVideoId(video.id); setImported(video.transcript); setActiveTime(video.id === VIDEO_ID ? 857 : 0); setView("guide"); setPlayerKey((key) => key + 1); setSetupStatus(""); setBuildPromptOpen(false); setLibraryOpen(false);
   };
 
   const copyAgentBuildInstruction = async () => {
@@ -415,7 +423,7 @@ export default function Home() {
           <button className={`rail-button ${mainMode === "exam" ? "active" : ""}`} aria-label="Exam mode" onClick={() => setMainMode("exam")}>
             <ClipboardCheck className="rail-icon" aria-hidden="true" />
           </button>
-          <button className="rail-button" aria-label="Video library" onClick={() => setLibraryOpen(true)}>
+          <button className="rail-button" aria-label="Course library" onClick={() => setLibraryOpen(true)}>
             <LibraryBig className="rail-icon" aria-hidden="true" />
           </button>
           <button className={`rail-button ${mainMode === "notes" ? "active" : ""}`} aria-label="Course notes" onClick={() => setMainMode("notes")}>
@@ -443,25 +451,25 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <button className="library-trigger" onClick={() => setLibraryOpen(true)}>
-            <span className="dot-grid">••<br />••</span><span><b>Video library</b><small>{library.length} {library.length === 1 ? "course" : "courses"} · device library</small></span><span className="chevron">⌄</span>
+            <span className="dot-grid">••<br />••</span><span><b>Course library</b><small>{library.length} {library.length === 1 ? "course" : "courses"} · device library</small></span><span className="chevron">⌄</span>
           </button>
           <label className="global-search"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search concepts, chapters, or captions…" /><kbd>⌘ K</kbd></label>
-          <button className="add-button" onClick={() => setLibraryOpen(true)}>＋ Add video</button>
+          <button className="add-button" onClick={() => setLibraryOpen(true)}>＋ Add course</button>
         </header>
 
         <div className={`content-grid ${mainMode === "exam" ? "exam-layout" : ""}`}>
           {mainMode === "course" ? <section className="player-column">
-            <div className="crumbs"><span>LIBRARY</span><b>{isBundledCourse ? "BUNDLED COURSE" : "VIDEO NOTEBOOK"}</b></div>
-            <div className="course-video-heading"><span className="source-pill">{activeVideo.source.toUpperCase()} · COURSE VIDEO</span><h1>{activeVideo.title}</h1></div>
-            <div className="player-frame">
-              <iframe key={playerKey} src={`https://www.youtube-nocookie.com/embed/${activeVideo.id}?start=${activeTime}&rel=0&modestbranding=1`} title={`${activeVideo.title} video player`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerPolicy="strict-origin-when-cross-origin" allowFullScreen />
-            </div>
+            <div className="crumbs"><span>LIBRARY</span><b>{isBundledCourse ? "BUNDLED COURSE" : "COURSE"}</b></div>
+            <div className="course-video-heading"><span className="source-pill">{activeVideo.source.toUpperCase()} · COURSE</span><h1>{activeVideo.title}</h1></div>
+            {primaryVideoId ? <div className="player-frame">
+              <iframe key={playerKey} src={`https://www.youtube-nocookie.com/embed/${primaryVideoId}?start=${activeTime}&rel=0&modestbranding=1`} title={`${activeVideo.title} video player`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerPolicy="strict-origin-when-cross-origin" allowFullScreen />
+            </div> : <section className="reading-source"><FileText aria-hidden="true" /><div><span>READING-BASED COURSE</span><h2>Learn from the source, at your own pace.</h2><p>This course does not require a video. Explore its chapters, study guide, and optional supporting videos.</p>{courseSourceUrl ? <a href={courseSourceUrl} target="_blank" rel="noreferrer">Open course source ↗</a> : null}</div></section>}
             <div className="video-heading">
-              <div><span className="source-pill">{isStarter ? "CURRENT COURSE SECTION" : activeVideo.source.toUpperCase()}</span><h1>{isStarter ? currentSection.title : activeVideo.title}</h1><p>{isStarter ? currentSection.summary : activeVideo.studyGuide ? "This course was built from the imported transcript and is ready to study or share." : "Connect an MCP-capable agent to build the course, or import an existing transcript manually."}</p></div>
-              <a className="youtube-link" href={`https://www.youtube.com/watch?v=${activeVideo.id}&t=${activeTime}s`} target="_blank" rel="noreferrer">Open on YouTube ↗</a>
+              <div><span className="source-pill">{isStarter ? "CURRENT COURSE SECTION" : activeVideo.source.toUpperCase()}</span><h1>{isStarter ? currentSection.title : activeVideo.title}</h1><p>{isStarter ? currentSection.summary : activeVideo.studyGuide ? "The course material is stored locally and is available to study or share." : "Connect an MCP-capable agent to build from the source material. Video transcripts are optional for reading-based courses."}</p></div>
+              {primaryVideoId ? <a className="youtube-link" href={`https://www.youtube.com/watch?v=${primaryVideoId}&t=${activeTime}s`} target="_blank" rel="noreferrer">Open on YouTube ↗</a> : null}
             </div>
 
-            <div className="stat-row"><div><strong>{isStarter ? "12h 38m" : "—"}</strong><span>runtime</span></div><div><strong>{isStarter ? "13" : "—"}</strong><span>chapters</span></div><div><strong>{isStarter ? questionBank.length : imported.length || "—"}</strong><span>{isStarter ? "exam scenarios" : "caption cues"}</span></div><div><strong>{isStarter ? "6" : "—"}</strong><span>visual references</span></div></div>
+            <div className="stat-row"><div><strong>{isStarter ? "12h 38m" : primaryVideoId ? "Video" : "Reading"}</strong><span>{isStarter ? "runtime" : "format"}</span></div><div><strong>{isStarter ? "13" : activeVideo.chapters?.length ?? 0}</strong><span>chapters</span></div><div><strong>{questionBank.length}</strong><span>{isStarter ? "exam scenarios" : "practice questions"}</span></div><div><strong>{isStarter ? "6" : (activeVideo.chapters ?? []).reduce((count, chapter) => count + (Array.isArray(chapter.videos) ? chapter.videos.length : 0), 0)}</strong><span>{isStarter ? "visual references" : "supporting videos"}</span></div></div>
 
             {isStarter ? <section className="chapter-section">
               <div className="section-title"><div><span>COURSE MAP</span><h2>Chapters</h2></div><span>{chapters.length} sections</span></div>
@@ -474,7 +482,8 @@ export default function Home() {
                   </button>
                 ))}
               </div>
-            </section> : <section className="new-notebook course-setup"><span>{activeVideo.studyGuide ? "COURSE READY" : "COURSE SETUP REQUIRED"}</span><h2>{activeVideo.studyGuide ? `${activeVideo.chapters?.length ?? 0} chapters and ${activeVideo.questionCount ?? 0} questions are available.` : "This course has not been built yet."}</h2><p>{activeVideo.studyGuide ? `The build is stored in local SQLite${activeVideo.conceptGraphRevision ? ` with concept graph revision ${activeVideo.conceptGraphRevision}` : ""}. You can study it, revise it through MCP, or share the complete course.` : "The video and its credited build instructions are ready. Start the agent to acquire available public captions automatically, or import a timestamped transcript yourself."}</p><div className="course-setup-actions"><button onClick={() => setAgentDialog("build")}>{activeVideo.studyGuide ? "Update with agent" : "Build with agent"}</button><button className="secondary-action" onClick={() => void viewBuildPrompt()}>View build prompt</button><button className="secondary-action" onClick={() => { setView("transcript"); uploadRef.current?.click(); }}>{activeVideo.transcript.length ? "Replace transcript" : "Import transcript"}</button></div>{setupStatus ? <p className="course-setup-status" role="status">{setupStatus}</p> : <p className="course-setup-help">Claude can connect to the local MCP endpoint, acquire missing public captions, coordinate subagents, and save the result directly to SQLite.</p>}</section>}
+            </section> : <section className="new-notebook course-setup"><span>{activeVideo.studyGuide ? "COURSE READY" : "COURSE SETUP REQUIRED"}</span><h2>{activeVideo.studyGuide ? `${activeVideo.chapters?.length ?? 0} chapters and ${activeVideo.questionCount ?? 0} questions are available.` : "This course has not been built yet."}</h2><p>{activeVideo.studyGuide ? `The build is stored in local SQLite${activeVideo.conceptGraphRevision ? ` with concept graph revision ${activeVideo.conceptGraphRevision}` : ""}. You can study it, revise it through MCP, or share the complete course.` : "The source and its credited build instructions are ready. The agent reads source material and acquires captions only when a primary video is provided."}</p><div className="course-setup-actions"><button onClick={() => setAgentDialog("build")}>{activeVideo.studyGuide ? "Update with agent" : "Build with agent"}</button><button className="secondary-action" onClick={() => void viewBuildPrompt()}>View build prompt</button>{primaryVideoId ? <button className="secondary-action" onClick={() => { setView("transcript"); uploadRef.current?.click(); }}>{activeVideo.transcript.length ? "Replace transcript" : "Import transcript"}</button> : null}</div>{setupStatus ? <p className="course-setup-status" role="status">{setupStatus}</p> : <p className="course-setup-help">Claude can read the source through its tools, coordinate course work, and save the result directly to SQLite.</p>}</section>}
+            {!isStarter && Boolean(activeVideo.chapters?.length) ? <CourseChapters chapters={activeVideo.chapters ?? []} query={query} onNotes={(id) => { setReadingChapterId(id); setNotesOpen(true); }} /> : null}
           </section> : mainMode === "notes" ? <section className="notes-index-main">
             <header className="notes-index-head"><div><span>COURSE JOURNAL · {courseNotes.length}</span><h1>Notes by chapter</h1><p>Your complete local note index, grouped by chapter and ordered by last modified.</p></div><button type="button" onClick={() => setNotesOpen(true)}><NotebookPen aria-hidden="true" /> Add note</button></header>
             <VoiceNotePlaylist notes={courseVoiceNotes} />
@@ -482,10 +491,10 @@ export default function Home() {
           </section> : <ExamMode questionBank={questionBank} courseId={activeVideoId} />}
 
           {mainMode !== "exam" && <aside className="notebook" ref={notebookRef}>
-            <div className="notebook-head"><div className="tabs" role="tablist"><button className={view === "guide" ? "active" : ""} onClick={() => setView("guide")}>Study guide</button><button className={view === "practice" ? "active" : ""} onClick={() => setView("practice")}>Practice</button><button className={view === "transcript" ? "active" : ""} onClick={() => setView("transcript")}>Transcript</button><button className={view === "notes" ? "active" : ""} onClick={() => setView("notes")}>Notes</button></div><div className="notebook-menu"><button className="icon-button" type="button" aria-label="More practice options" aria-expanded={moreOpen} onClick={() => setMoreOpen((open) => !open)}><Ellipsis aria-hidden="true" /></button>{moreOpen && <div className="more-menu" role="menu"><button type="button" role="menuitem" onClick={startFullBank}>Start full {questionBank.length}-question bank</button><button type="button" role="menuitem" onClick={resetPractice}>Reset all practice progress</button></div>}</div></div>
+            <div className="notebook-head"><div className="tabs" role="tablist"><button className={view === "guide" ? "active" : ""} onClick={() => setView("guide")}>Study guide</button><button className={view === "practice" ? "active" : ""} onClick={() => setView("practice")}>Practice</button>{primaryVideoId || imported.length ? <button className={view === "transcript" ? "active" : ""} onClick={() => setView("transcript")}>Transcript</button> : null}<button className={view === "notes" ? "active" : ""} onClick={() => setView("notes")}>Notes</button></div><div className="notebook-menu"><button className="icon-button" type="button" aria-label="More practice options" aria-expanded={moreOpen} onClick={() => setMoreOpen((open) => !open)}><Ellipsis aria-hidden="true" /></button>{moreOpen && <div className="more-menu" role="menu"><button type="button" role="menuitem" onClick={startFullBank}>Start full {questionBank.length}-question bank</button><button type="button" role="menuitem" onClick={resetPractice}>Reset all practice progress</button></div>}</div></div>
             {view === "guide" ? (
               <>
-                <div className="guide-intro"><span>{isStarter ? "EXAM COMPANION" : activeVideo.studyGuide ? "AGENT-BUILT COURSE" : "VIDEO NOTEBOOK"}</span><h2>{isStarter ? "From 12 hours to a focused review." : activeVideo.studyGuide ? "Your generated study guide." : "Your study guide starts with captions."}</h2><p>{isStarter ? "Search the architecture decisions, jump straight to the explanation, and review the visual evidence in context." : activeVideo.studyGuide ?? "Import a caption file, then build your own searchable path through the video."}</p>{questionBank.length > 0 && <button className="practice-cta" onClick={startFullBank}>Start {questionBank.length}-question bank →</button>}</div>
+                <div className="guide-intro"><span>{isStarter ? "EXAM COMPANION" : activeVideo.studyGuide ? "AGENT-BUILT COURSE" : "COURSE"}</span><h2>{isStarter ? "From 12 hours to a focused review." : activeVideo.studyGuide ? "Your generated study guide." : "Your study guide starts with the source."}</h2><p>{isStarter ? "Search the architecture decisions, jump straight to the explanation, and review the visual evidence in context." : activeVideo.studyGuide ?? "Build a course from the linked source. A video and transcript are not required."}</p>{questionBank.length > 0 && <button className="practice-cta" onClick={startFullBank}>Start {questionBank.length}-question bank →</button>}</div>
                 <div className="filter-row">{(["all", "concept", "lab", "exam"] as const).map((item) => <button key={item} onClick={() => setFilter(item)} className={filter === item ? "active" : ""}>{item}</button>)}</div>
                 <div className="note-feed">
                   {isStarter && filteredNotes.map((note) => (
@@ -494,7 +503,7 @@ export default function Home() {
                       <div className="note-meta"><button onClick={() => seek(note.time)}>{formatTime(note.time)}</button><span>{note.kind}</span></div><h3>{note.title}</h3><p>{note.text}</p><button className="jump-link" onClick={() => seek(note.time)}>Watch this moment →</button>
                     </article>
                   ))}
-                  {(!isStarter || !filteredNotes.length) && <div className="empty-state">{isStarter ? `No study moments match “${query}”.` : activeVideo.studyGuide ? `${activeVideo.chapters?.length ?? 0} generated chapters are stored with this course.` : "Import captions to begin this notebook."}</div>}
+                  {(!isStarter || !filteredNotes.length) && <div className="empty-state">{isStarter ? `No study moments match “${query}”.` : activeVideo.studyGuide ? `${activeVideo.chapters?.length ?? 0} generated chapters are stored with this course.` : "Use Build with agent to develop this course from its source material."}</div>}
                 </div>
               </>
             ) : view === "notes" ? (
@@ -614,16 +623,16 @@ export default function Home() {
         <footer className="build-prompt-actions"><span role="status">{promptCopyStatus}</span><button type="button" onClick={() => void copyBuildPrompt()}><Copy aria-hidden="true" /> Copy complete prompt</button></footer>
       </section></dialog>}
 
-      {libraryOpen && <dialog open className="modal-backdrop" aria-label="Video library"><section className="library-modal">
-        <div className="modal-head"><div><span>YOUR LIBRARY</span><h2>Video notebooks</h2></div><button onClick={() => setLibraryOpen(false)} aria-label="Close">×</button></div>
-        <div className="library-stack">{library.map((video) => <article className="library-card" key={video.id}><img src={`https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`} alt={`${video.title} thumbnail`} /><div><span>{video.id === VIDEO_ID ? "STUDY GUIDE READY" : video.studyGuide ? `${video.chapters?.length ?? 0} CHAPTERS · ${video.questionCount ?? 0} QUESTIONS` : video.id === KUBERNETES_VIDEO_ID ? "AGENT BUILD READY" : video.transcript.length ? `${video.transcript.length} CAPTION CUES · READY TO BUILD` : "CAPTIONS ACQUIRED ON BUILD"}</span><h3>{video.title}</h3><p>{video.id === VIDEO_ID ? "13 chapters · 18 study moments · 6 visual references" : video.studyGuide ? "SQLite-backed course · ready to study and share" : video.id === KUBERNETES_VIDEO_ID ? "Bundled freeCodeCamp course · coordinated agent build brief" : "Personal video notebook"}</p><details className="course-origin"><summary>Required course prompt · {video.promptCredit}</summary><pre>{video.originPrompt}</pre></details></div><button onClick={() => selectVideo(video)}>{video.id === activeVideoId ? "Current" : "Open"}</button></article>)}</div>
+      {libraryOpen && <dialog open className="modal-backdrop" aria-label="Course library"><section className="library-modal">
+        <div className="modal-head"><div><span>YOUR LIBRARY</span><h2>Courses</h2></div><button onClick={() => setLibraryOpen(false)} aria-label="Close">×</button></div>
+        <div className="library-stack">{library.map((video) => <article className="library-card" key={video.id}>{youtubeId(video.videoUrl ?? (bundledVideoIds.has(video.id) ? video.id : "")) ? <img src={`https://i.ytimg.com/vi/${youtubeId(video.videoUrl ?? video.id)}/hqdefault.jpg`} alt={`${video.title} thumbnail`} /> : <div className="course-source-thumbnail"><FileText aria-hidden="true" /><span>READING</span></div>}<div><span>{video.id === VIDEO_ID ? "STUDY GUIDE READY" : video.studyGuide ? `${video.chapters?.length ?? 0} CHAPTERS · ${video.questionCount ?? 0} QUESTIONS` : video.id === KUBERNETES_VIDEO_ID ? "AGENT BUILD READY" : video.transcript.length ? `${video.transcript.length} CAPTION CUES · READY TO BUILD` : video.videoUrl ? "CAPTIONS ACQUIRED ON BUILD" : "SOURCE READY TO BUILD"}</span><h3>{video.title}</h3><p>{video.id === VIDEO_ID ? "13 chapters · 18 study moments · 6 visual references" : video.studyGuide ? "SQLite-backed course · ready to study and share" : video.id === KUBERNETES_VIDEO_ID ? "Bundled freeCodeCamp course · coordinated agent build brief" : "Personal study course"}</p><details className="course-origin"><summary>Required course prompt · {video.promptCredit}</summary><pre>{video.originPrompt}</pre></details></div><button onClick={() => selectVideo(video)}>{video.id === activeVideoId ? "Current" : "Open"}</button></article>)}</div>
         <div className="mcp-panel"><div><b>Vidmark MCP server</b><p>Agents can build courses and inspect local prompts, notes, and transcripts.</p><code>{VIDMARK_MCP_URL}</code></div><button type="button" onClick={() => void navigator.clipboard.writeText(VIDMARK_MCP_URL)}><Copy aria-hidden="true" /> Copy URL</button></div>
-        <div className="add-panel"><b>Add another YouTube video</b><p>Vidmark automatically applies its master course-builder prompt. You must add course-specific context so the agent knows the audience, goals, emphasis, and assessment requirements.</p><label><span>YouTube URL · required</span><input required value={newUrl} onChange={(event) => setNewUrl(event.target.value)} placeholder="https://youtube.com/watch?v=…" /></label><label><span>Course-specific prompt · required</span><textarea required value={newPrompt} onChange={(event) => setNewPrompt(event.target.value)} placeholder="Who is this course for? What should the agent emphasize, research, verify, create, or avoid?" /><small>This is layered after the built-in master prompt and cannot be blank.</small></label><div className="add-prompt-footer"><label><span>Prompt credit · required</span><input required value={newPromptCredit} onChange={(event) => setNewPromptCredit(event.target.value)} placeholder="Originator or organization" /></label><button onClick={addVideo} disabled={!newUrl.trim() || !newPrompt.trim() || !newPromptCredit.trim()}>Add course</button></div></div>
+        <div className="add-panel"><b>Add a course</b><p>Vidmark automatically applies its master course-builder prompt. You must add course-specific context so the agent knows the audience, goals, emphasis, and assessment requirements.</p><label><span>Course title · required</span><input required value={newTitle} onChange={(event) => setNewTitle(event.target.value)} placeholder="Course title" /></label><label><span>Source URL · required</span><input required value={newUrl} onChange={(event) => setNewUrl(event.target.value)} placeholder="https://… (web page, course, or YouTube video)" /></label><label><span>Course-specific prompt · required</span><textarea required value={newPrompt} onChange={(event) => setNewPrompt(event.target.value)} placeholder="Who is this course for? What should the agent emphasize, research, verify, create, or avoid?" /><small>This is layered after the built-in master prompt and cannot be blank.</small></label><div className="add-prompt-footer"><label><span>Prompt credit · required</span><input required value={newPromptCredit} onChange={(event) => setNewPromptCredit(event.target.value)} placeholder="Originator or organization" /></label><button onClick={() => void addVideo()} disabled={addingCourse || !libraryLoaded || !webUrl(newUrl) || !newTitle.trim() || !newPrompt.trim() || !newPromptCredit.trim()}>{addingCourse ? "Saving…" : "Add course"}</button></div>{addCourseError ? <p role="alert">{addCourseError}</p> : null}</div>
       </section></dialog>}
-      {agentDialog && <AgentProviderDialog key={agentDialog} open initialView={agentDialog} courseId={activeVideo.id} courseTitle={activeVideo.title} transcriptCues={activeVideo.transcript.length} onClose={() => setAgentDialog(null)} onCopyHandoff={copyAgentBuildInstruction} onBuildComplete={async () => { await refreshLibraryFromDatabase(); setQuestionBank(await getCourseQuestions(activeVideo.id, [])); }} />}
+      {agentDialog && <AgentProviderDialog key={agentDialog} open initialView={agentDialog} courseId={activeVideo.id} courseTitle={activeVideo.title} transcriptCues={activeVideo.transcript.length} hasVideo={Boolean(activeVideo.videoUrl || primaryVideoId)} onClose={() => setAgentDialog(null)} onCopyHandoff={copyAgentBuildInstruction} onBuildComplete={async () => { await refreshLibraryFromDatabase(); setQuestionBank(await getCourseQuestions(activeVideo.id, [])); }} />}
       <NoteSession open={notesOpen} onClose={() => setNotesOpen(false)} notes={courseNotes} courseId={activeVideoId} chapterId={currentChapterId} chapterTitle={currentSection.title} onNotesChanged={refreshSavedNotes} onShareNote={async (note, recipient) => { await shareStudyNote(note, recipient); await refreshSavedNotes(); }} />
       {profileLoaded && (!profile || profileOpen) && <ProfileOnboarding key={profile?.updatedAt ?? "new"} profile={profile} required={!profile} onSaved={(saved) => { setProfile(saved); setProfileOpen(false); }} onClose={() => setProfileOpen(false)} />}
-      <StudyPeers key={collaborationTab ?? "closed"} open={Boolean(collaborationTab)} initialTab={collaborationTab ?? "inbox"} profile={profile} courseId={activeVideoId} courseTitle={activeVideo.title} videoId={activeVideo.id} onClose={() => setCollaborationTab(null)} onEditProfile={() => setProfileOpen(true)} onQuestionsChanged={() => { void getCourseQuestions(VIDEO_ID, bundledExamBank).then(setQuestionBank); }} onCoursesChanged={() => { void refreshLibraryFromDatabase(); }} onUnreadChange={updateUnreadInbox} />
+      <StudyPeers key={collaborationTab ?? "closed"} open={Boolean(collaborationTab)} initialTab={collaborationTab ?? "inbox"} profile={profile} courseId={activeVideoId} courseTitle={activeVideo.title} videoId={activeVideo.sourceKey || primaryVideoId || activeVideo.id} onClose={() => setCollaborationTab(null)} onEditProfile={() => setProfileOpen(true)} onQuestionsChanged={() => { void getCourseQuestions(activeVideoId, isStarter ? bundledExamBank : []).then(setQuestionBank); }} onCoursesChanged={() => { void refreshLibraryFromDatabase(); }} onUnreadChange={updateUnreadInbox} />
     </main>
   );
 }

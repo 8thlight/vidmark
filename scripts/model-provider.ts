@@ -155,7 +155,7 @@ const runBuild = async (job: BuildJob, settings: ProviderSettings, databasePath:
     const promptOverrides = storedPrompts.overrides;
     const course = store.getCourse(job.courseId);
     if (!course) throw new Error("The selected course is not available to the local agent.");
-    updateJob(job, "Starting coordinator", `Running ${settings.model} with the master and course-specific prompts.${course.transcript?.length ? "" : " The coordinator will acquire public captions before building."}`);
+    updateJob(job, "Starting coordinator", `Running ${settings.model} with the master and course-specific prompts.${!course.videoUrl ? " The coordinator will read the course source; no transcript is required." : course.transcript?.length ? "" : " The coordinator will acquire public captions before building."}`);
     const messages: ChatMessage[] = [{ role: "user", content: `${composeCourseBuildPrompt(String(course.title), String(course.id), String(course.coursePrompt), String(course.promptCredit), getSystemPrompt("courseBuilderMaster", promptOverrides))}\n\n${getSystemPrompt("coordinatorRuntime", promptOverrides)}` }];
     const tools: unknown[] = [...localTools, ...(settings.provider === "openrouter" && settings.enableWebSearch ? [{ type: "openrouter:web_search", max_total_results: 10, search_context_size: "high" }] : [])];
     let saved = false;
@@ -174,12 +174,13 @@ const runBuild = async (job: BuildJob, settings: ProviderSettings, databasePath:
         const args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
         let result: unknown;
         if (call.function.name === "get_course") {
-          result = { id: course.id, title: course.title, promptCredit: course.promptCredit, transcriptCues: course.transcript.length, existing: { chapters: course.chapters?.length ?? 0, questions: course.questions?.length ?? 0, hasStudyGuide: Boolean(course.studyGuide) } };
+          result = { id: course.id, title: course.title, sourceUrl: course.sourceUrl, videoUrl: course.videoUrl, coursePrompt: course.coursePrompt, promptCredit: course.promptCredit, transcriptCues: course.transcript.length, existing: { chapters: course.chapters?.length ?? 0, questions: course.questions?.length ?? 0, hasStudyGuide: Boolean(course.studyGuide) } };
         } else if (call.function.name === "get_transcript") {
           const offset = Math.max(0, Number(args.offset ?? 0));
           const limit = Math.min(500, Math.max(1, Number(args.limit ?? 250)));
           result = { offset, total: course.transcript.length, cues: course.transcript.slice(offset, offset + limit) };
         } else if (call.function.name === "acquire_course_transcript") {
+          if (!course.videoUrl) { messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: "Non-video course: read sourceUrl with fetch_url instead. No transcript is required." }) }); continue; }
           updateJob(job, "Acquiring transcript", "Retrieving the video's public timestamped YouTube captions.");
           const acquired = await acquireYouTubeTranscript(String(course.videoUrl ?? course.videoId ?? course.id), String(args.preferredLanguage ?? "en"));
           store.replaceTranscript(String(course.id), acquired.cues);

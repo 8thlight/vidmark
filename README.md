@@ -1,6 +1,6 @@
 # Vidmark
 
-**Turn a YouTube video into an agent-built course, then study it, revise it, and share it.**
+**Turn source material into an agent-built course, then study it, revise it, and share it.**
 
 Vidmark is a local-first macOS study workspace with an integrated MCP server. It combines YouTube transcripts, timestamped chapters, study guides, notes, concept graphs, practice questions, exam sessions, and asynchronous collaboration in one app.
 
@@ -10,7 +10,8 @@ Vidmark is a local-first macOS study workspace with an integrated MCP server. It
 
 ## Features
 
-- Build complete courses from YouTube videos with Claude or another MCP-capable agent.
+- Build courses from web sources or YouTube videos with Claude or another MCP-capable agent. A primary video is optional.
+- Organize reading-based chapters with optional supporting videos; chapter media stays with shared course bundles.
 - Acquire available public YouTube captions when a transcript is not supplied.
 - Study with timestamped chapters, transcript search, text and voice notes, concept graphs, practice questions, and exams. Voice notes use Apple Speech on-device when available.
 - Customize the global model instructions Vidmark uses for course building and specialist agents.
@@ -40,12 +41,12 @@ Vidmark checks its signed HTTPS update feed automatically and installs verified 
 ## Using Vidmark
 
 1. Create a profile with your name, email, and DiceBear avatar. The email identifies you in the Vidmark directory; the app does not send email.
-2. Add a YouTube URL, a course-specific origin prompt, and its credit.
+2. Add a course title, source URL (web page or YouTube), course-specific prompt, and its credit.
 3. Choose **Build with agent**, or connect an external MCP client and request the `build_vidmark_course` prompt.
 4. Study the generated course locally.
 5. Share a complete course or an individual artifact with a registered user, or create a revocable course link.
 
-Each course owns its transcript, chapters, study guide, question bank, and independently revisioned concept graph. These artifacts stay together when the course is shared or published.
+Each course owns its source link, optional primary video and transcript, chapters (including optional supporting videos), study guide, question bank, and independently revisioned concept graph. These artifacts stay together when the course is shared or published.
 
 ## Claude integration
 
@@ -82,7 +83,7 @@ Equivalent client configuration:
 }
 ```
 
-The `build_vidmark_course` prompt instructs the agent to acquire a missing transcript, coordinate bounded specialist work, review the artifacts, and save the completed course through MCP.
+The `build_vidmark_course` prompt instructs the agent to read the course source (or acquire missing video captions), coordinate bounded specialist work, review the artifacts, and save the completed course through MCP.
 
 ## MCP tools
 

@@ -13,7 +13,7 @@ export type SharedStudyNote = { id: string; text: string; updatedAt: number; sou
 export type DirectoryUser = { userId: string; deviceId: string; profile: PeerProfile; encryptionPublicKey: string; devices: Array<{ deviceId: string; encryptionPublicKey: string }> };
 export type SyncStatus = { deviceId: string; relay: { url: string; connected: boolean; error?: string }; transport: "hosted-relay"; directSharesEndToEndEncrypted: true };
 export type InboxItem = { id: string; type: "course_invite" | "message" | "revision"; title: string; preview: string; status: "unread" | "read"; actionStatus: "pending" | "accepted" | "rejected" | "none"; payload: Record<string, unknown>; senderProfile?: PeerProfile; senderDeviceId?: string; createdAt: number; updatedAt: number };
-export type CourseSummary = { id: string; videoId: string; title: string; source: string; videoUrl: string; visibility: "private" | "public"; globalVersion?: number; globalOwnerDeviceId?: string; forkedFromVersion?: number; globalLocked: boolean; conceptGraphRevision?: number; revision: number; updatedAt: number };
+export type CourseSummary = { id: string; videoId: string; title: string; source: string; videoUrl: string; sourceUrl?: string; visibility: "private" | "public"; globalVersion?: number; globalOwnerDeviceId?: string; forkedFromVersion?: number; globalLocked: boolean; conceptGraphRevision?: number; revision: number; updatedAt: number };
 export type GlobalCourse = { videoId: string; ownerDeviceId: string; ownerProfile: PeerProfile; course: Record<string, unknown>; version: number; createdAt: number; updatedAt: number };
 export type GlobalRevision = { id: string; videoId: string; proposerDeviceId: string; proposerProfile: PeerProfile; baseVersion: number; status: "pending" | "accepted" | "rejected"; createdAt: number; updatedAt: number };
 export type CourseComment = { id: string; videoId: string; courseId: string; parentId?: string; body: string; authorProfile: PeerProfile; authorDeviceId: string; createdAt: number; updatedAt: number };
@@ -83,3 +83,4 @@ export const getCourseQuestions = async (courseId: string, fallback: ExamQuestio
     });
   } catch { return fallback; }
 };
+export const createLocalCourse = async (course: { id: string; title: string; source: string; sourceUrl: string; videoUrl: string; originPrompt: string; promptCredit: string }) => responseJson<{ course: Record<string, unknown> }>(await fetch(`${VIDMARK_LOCAL_ORIGIN}/api/courses`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(course) }));

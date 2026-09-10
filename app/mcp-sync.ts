@@ -5,6 +5,7 @@ export type McpCourseSnapshot = {
   title: string;
   source: string;
   videoUrl: string;
+  sourceUrl?: string;
   originPrompt: string;
   promptCredit: string;
   transcript: TranscriptCue[];

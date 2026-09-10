@@ -18,13 +18,13 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = requestHeaders.get("host") ?? "localhost:3000";
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
   const socialImage = `${protocol}://${host}/og.png`;
-  const title = "Vidmark — YouTube Study Library";
-  const description = "Turn long YouTube courses into searchable, timestamped study notebooks.";
+  const title = "Vidmark — Study Library";
+  const description = "Build searchable study courses from web sources and optional videos.";
   return {
     title,
     description,
     icons: { icon: "/vidmark-mark.png", shortcut: "/vidmark-mark.png", apple: "/vidmark-mark.png" },
-    openGraph: { title, description, images: [{ url: socialImage, width: 1672, height: 941, alt: "Vidmark video study library" }] },
+    openGraph: { title, description, images: [{ url: socialImage, width: 1672, height: 941, alt: "Vidmark study library" }] },
     twitter: { card: "summary_large_image", title, description, images: [socialImage] },
   };
 }
