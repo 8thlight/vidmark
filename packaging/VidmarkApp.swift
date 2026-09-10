@@ -42,6 +42,10 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     private var notificationsConfigured = false
     private var pendingNotificationTarget: (target: String, entityId: String)?
     private var serverProcess: Process?
+    private var serverInput: FileHandle?
+    private var serverOutput: FileHandle?
+    private var serverOutputBuffer = ""
+    private var serverReady = false
     private var serverLog: FileHandle?
     private var claudeExtensionURL: URL?
     private var isTerminating = false
@@ -49,6 +53,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     private var isAuthenticated: Bool { accessSession.isAuthenticated }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        stopStaleServices()
         notificationCursor = UserDefaults.standard.integer(forKey: notificationCursorKey)
         notificationInstallationId = UserDefaults.standard.string(forKey: notificationInstallationKey) ?? ""
         buildMenu()
@@ -297,6 +302,34 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         window.makeKeyAndOrderFront(nil)
     }
 
+    private func stopStaleServices() {
+        guard let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent() else { return }
+        let expected = executableDirectory.appendingPathComponent("VidmarkServer").resolvingSymlinksInPath().path
+        let listing = Process()
+        let output = Pipe()
+        listing.executableURL = URL(fileURLWithPath: "/bin/ps")
+        listing.arguments = ["-axww", "-o", "pid=,comm="]
+        listing.standardOutput = output
+        do {
+            try listing.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            listing.waitUntilExit()
+            guard listing.terminationStatus == 0, let text = String(data: data, encoding: .utf8) else { return }
+            let stalePIDs = text.split(separator: "\n").compactMap { line -> pid_t? in
+                let parts = line.trimmingCharacters(in: .whitespaces).split(maxSplits: 1, whereSeparator: { $0.isWhitespace })
+                guard parts.count == 2, let pid = pid_t(parts[0]), pid > 1 else { return nil }
+                let path = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                return URL(fileURLWithPath: path).resolvingSymlinksInPath().path == expected ? pid : nil
+            }
+            for pid in stalePIDs { kill(pid, SIGTERM) }
+            let deadline = Date().addingTimeInterval(2)
+            while stalePIDs.contains(where: { kill($0, 0) == 0 }) && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+            for pid in stalePIDs where kill(pid, 0) == 0 { kill(pid, SIGKILL) }
+        } catch {
+            NSLog("Could not inspect previous Vidmark services: \(error.localizedDescription)")
+        }
+    }
+
     private func launchServer() {
         guard isAuthenticated, !isTerminating else { return }
         guard let executable = Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("VidmarkServer") else {
@@ -317,8 +350,32 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         process.currentDirectoryURL = Bundle.main.resourceURL
         var environment = ProcessInfo.processInfo.environment
         environment["VIDMARK_NATIVE_SHELL"] = "1"
+        let sessionToken = UUID().uuidString
+        environment["VIDMARK_SESSION_TOKEN"] = sessionToken
         process.environment = environment
-        process.standardOutput = serverLog
+        let input = Pipe()
+        process.standardInput = input
+        let output = Pipe()
+        process.standardOutput = output
+        serverOutput = output.fileHandleForReading
+        serverOutputBuffer = ""
+        serverReady = false
+        let revision = accessSession.revision
+        output.fileHandleForReading.readabilityHandler = { [weak self, weak process] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
+            DispatchQueue.main.async {
+                guard let self, let process, self.serverProcess === process, self.accessSession.acceptsWork(from: revision) else { return }
+                self.serverOutputBuffer += String(decoding: data, as: UTF8.self)
+                while let newline = self.serverOutputBuffer.firstIndex(of: "\n") {
+                    let line = String(self.serverOutputBuffer[..<newline])
+                    self.serverOutputBuffer.removeSubrange(...newline)
+                    if line == "VIDMARK_READY \(sessionToken)" { self.serverReady = true }
+                    else { try? self.serverLog?.write(contentsOf: Data((line + "\n").utf8)) }
+                }
+                self.serverOutputBuffer = String(self.serverOutputBuffer.suffix(65536))
+            }
+        }
         process.standardError = serverLog
         process.terminationHandler = { [weak self] process in
             DispatchQueue.main.async {
@@ -329,7 +386,12 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         do {
             try process.run()
             serverProcess = process
+            try input.fileHandleForReading.close()
+            try output.fileHandleForWriting.close()
+            serverInput = input.fileHandleForWriting
+            try serverInput?.write(contentsOf: Data("\(sessionToken)\n".utf8))
         } catch {
+            stopServer()
             showStartupError("The Bun server could not start: \(error.localizedDescription)")
         }
     }
@@ -340,28 +402,20 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         readinessTimer?.invalidate()
         readinessTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] timer in
             guard let self, self.accessSession.acceptsWork(from: revision) else { timer.invalidate(); return }
-            var request = URLRequest(url: self.appURL)
-            request.timeoutInterval = 0.8
-            URLSession.shared.dataTask(with: request) { _, response, _ in
-                guard let http = response as? HTTPURLResponse, (200..<500).contains(http.statusCode) else {
-                    DispatchQueue.main.async {
-                        guard timer.isValid, self.accessSession.acceptsWork(from: revision) else { return }
-                        self.readinessAttempts += 1
-                        if self.readinessAttempts >= 120 {
-                            timer.invalidate()
-                            self.showStartupError("Vidmark did not become ready within 30 seconds. Check ~/Library/Logs/Vidmark/server.log.")
-                        }
-                    }
-                    return
-                }
-                DispatchQueue.main.async {
-                    guard timer.isValid, self.accessSession.acceptsWork(from: revision) else { return }
-                    timer.invalidate()
-                    self.statusLabel.stringValue = "Loading workspace…"
-                    self.webView.load(URLRequest(url: self.appURL))
-                    self.startNotificationPolling()
-                }
-            }.resume()
+            guard self.serverProcess?.isRunning == true else { timer.invalidate(); return }
+            if self.serverReady {
+                timer.invalidate()
+                self.statusLabel.stringValue = "Loading workspace…"
+                self.webView.load(URLRequest(url: self.appURL))
+                self.startNotificationPolling()
+                return
+            }
+            self.readinessAttempts += 1
+            if self.readinessAttempts >= 120 {
+                timer.invalidate()
+                self.stopServer()
+                self.showStartupError("Vidmark did not become ready within 30 seconds. Check ~/Library/Logs/Vidmark/server.log.")
+            }
         }
     }
 
@@ -464,6 +518,10 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     private func stopServer() {
+        serverReady = false
+        serverOutput?.readabilityHandler = nil
+        try? serverInput?.close()
+        serverInput = nil
         if let process = serverProcess, process.isRunning {
             process.terminationHandler = nil
             process.terminate()
@@ -474,6 +532,8 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
             process.waitUntilExit()
         }
         serverProcess = nil
+        try? serverOutput?.close()
+        serverOutput = nil
         try? serverLog?.close()
         serverLog = nil
     }
@@ -491,6 +551,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        guard webView.url?.scheme != "about", (error as NSError).code != NSURLErrorCancelled else { return }
         showStartupError("The workspace could not load: \(error.localizedDescription)")
     }
 
