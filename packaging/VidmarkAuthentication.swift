@@ -15,9 +15,32 @@ final class VidmarkAuthenticationController {
     private let pinSaltKey = "VidmarkPINSalt"
     private let pinVerifierKey = "VidmarkPINVerifier"
     private let pinDerivationRounds: UInt32 = 250_000
-    private var defaults: UserDefaults { .standard }
+    private let defaults: UserDefaults
+    private var operationRevision = UUID()
+    private var activeContext: LAContext?
+    private var activeAlert: NSAlert?
+
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    func cancel() {
+        operationRevision = UUID()
+        activeContext?.invalidate()
+        activeContext = nil
+        if let alert = activeAlert {
+            NSApp.abortModal()
+            alert.window.orderOut(nil)
+        }
+    }
+
+    private func runAlert(_ alert: NSAlert) -> NSApplication.ModalResponse {
+        let revision = operationRevision
+        activeAlert = alert
+        let response = alert.runModal()
+        activeAlert = nil
+        return revision == operationRevision ? response : .abort
+    }
     private var hasPINMaterial: Bool {
-        defaults.data(forKey: pinSaltKey) != nil || defaults.data(forKey: pinVerifierKey) != nil
+        defaults.object(forKey: pinSaltKey) != nil || defaults.object(forKey: pinVerifierKey) != nil
     }
 
     var mode: VidmarkAuthenticationMode? {
@@ -47,6 +70,13 @@ final class VidmarkAuthenticationController {
     }
 
     func changeAuthentication(completion: @escaping (Bool) -> Void) {
+        authenticateOrConfigure { [weak self] success in
+            guard let self, success else { completion(false); return }
+            self.chooseAuthentication(completion: completion)
+        }
+    }
+
+    private func chooseAuthentication(completion: @escaping (Bool) -> Void) {
         let alert = NSAlert()
         alert.messageText = "Vidmark security"
         alert.informativeText = "Current method: \(modeDescription). Choose how Vidmark should verify you when it opens."
@@ -55,7 +85,7 @@ final class VidmarkAuthenticationController {
         alert.addButton(withTitle: "Use a PIN")
         alert.addButton(withTitle: "Cancel")
 
-        switch alert.runModal() {
+        switch runAlert(alert) {
         case .alertFirstButtonReturn:
             authenticateWithMac(reason: "Confirm your identity to use Mac authentication for Vidmark") { [weak self] success in
                 guard let self, success else { completion(false); return }
@@ -80,7 +110,7 @@ final class VidmarkAuthenticationController {
         alert.addButton(withTitle: "Use a PIN")
         alert.addButton(withTitle: "Quit")
 
-        switch alert.runModal() {
+        switch runAlert(alert) {
         case .alertFirstButtonReturn:
             authenticateWithMac(reason: "Set up Mac authentication for Vidmark") { [weak self] success in
                 guard let self, success else { completion(false); return }
@@ -89,8 +119,10 @@ final class VidmarkAuthenticationController {
             }
         case .alertSecondButtonReturn:
             completion(configurePIN())
-        default:
+        case .alertThirdButtonReturn:
             NSApp.terminate(nil)
+            completion(false)
+        default:
             completion(false)
         }
     }
@@ -105,7 +137,9 @@ final class VidmarkAuthenticationController {
     }
 
     private func authenticateWithMac(reason: String, completion: @escaping (Bool) -> Void) {
+        let revision = operationRevision
         let context = LAContext()
+        activeContext = context
         context.localizedCancelTitle = "Cancel"
         var policyError: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &policyError) else {
@@ -115,6 +149,8 @@ final class VidmarkAuthenticationController {
         }
         context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, error in
             DispatchQueue.main.async {
+                guard self.operationRevision == revision else { completion(false); return }
+                self.activeContext = nil
                 if !success, let error = error as? LAError, error.code != .userCancel && error.code != .appCancel && error.code != .systemCancel {
                     self.showError(title: "Could not unlock Vidmark", message: error.localizedDescription)
                 }
@@ -124,7 +160,8 @@ final class VidmarkAuthenticationController {
     }
 
     private func configurePIN() -> Bool {
-        while true {
+        let revision = operationRevision
+        while operationRevision == revision {
             let first = NSSecureTextField(string: "")
             let confirmation = NSSecureTextField(string: "")
             first.placeholderString = "6-digit PIN"
@@ -147,7 +184,7 @@ final class VidmarkAuthenticationController {
             alert.addButton(withTitle: "Cancel")
             alert.window.initialFirstResponder = first
 
-            guard alert.runModal() == .alertFirstButtonReturn else { return false }
+            guard runAlert(alert) == .alertFirstButtonReturn else { return false }
             let pin = first.stringValue
             guard isValidPIN(pin) else {
                 showError(title: "Use six digits", message: "A Vidmark PIN must contain exactly six numeric digits.")
@@ -165,6 +202,7 @@ final class VidmarkAuthenticationController {
             resetPINFailures()
             return true
         }
+        return false
     }
 
     private func authenticateWithPIN(completion: @escaping (Bool) -> Void) {
@@ -177,7 +215,8 @@ final class VidmarkAuthenticationController {
         }
 
         guard let savedSalt = defaults.data(forKey: pinSaltKey),
-              let savedVerifier = defaults.data(forKey: pinVerifierKey) else {
+              savedSalt.count == 32,
+              let savedVerifier = defaults.data(forKey: pinVerifierKey), savedVerifier.count == 32 else {
             recoverWithMac(message: "The local PIN verifier is incomplete. Use Mac authentication to recover access.", completion: completion)
             return
         }
@@ -197,7 +236,7 @@ final class VidmarkAuthenticationController {
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
 
-        switch alert.runModal() {
+        switch runAlert(alert) {
         case .alertFirstButtonReturn:
             if let candidate = derivePINVerifier(pin: field.stringValue, salt: savedSalt),
                securelyMatches(candidate, savedVerifier) {
@@ -216,7 +255,9 @@ final class VidmarkAuthenticationController {
     }
 
     private func recoverWithMac(message: String, completion: @escaping (Bool) -> Void) {
+        let revision = operationRevision
         showError(title: "Security recovery required", message: message)
+        guard operationRevision == revision else { completion(false); return }
         authenticateWithMac(reason: "Recover access to Vidmark") { [weak self] success in
             if let self, success {
                 self.defaults.set(VidmarkAuthenticationMode.system.rawValue, forKey: self.modeKey)
@@ -301,6 +342,6 @@ final class VidmarkAuthenticationController {
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
-        alert.runModal()
+        _ = runAlert(alert)
     }
 }

@@ -29,9 +29,9 @@ Question shares arrive as pending imports. The recipient can compare their local
 
 | Artifact | Purpose |
 | --- | --- |
-| [Vidmark 1.3.1 for macOS](releases/Vidmark-1.3.1.dmg) | Complete desktop application |
-| [Claude Desktop MCP Bundle](releases/Vidmark-1.3.1.mcpb) | Preferred Claude Desktop extension |
-| [Claude Desktop DXT build](releases/Vidmark-1.3.1.dxt) | Compatibility package for Claude versions that request `.dxt` |
+| [Vidmark 1.3.2 for macOS](releases/Vidmark-1.3.2.dmg) | Complete desktop application |
+| [Claude Desktop MCP Bundle](releases/Vidmark-1.3.2.mcpb) | Preferred Claude Desktop extension |
+| [Claude Desktop DXT build](releases/Vidmark-1.3.2.dxt) | Compatibility package for Claude versions that request `.dxt` |
 
 Open the disk image, drag Vidmark to Applications, and launch it. The repository build is ad-hoc signed rather than Apple-notarized, so the first launch may require Control-clicking Vidmark, choosing **Open**, and confirming.
 
@@ -63,7 +63,7 @@ The extension starts Vidmark when necessary and connects Claude Desktop to the a
 
 ### Claude Code and HTTP MCP clients
 
-Keep Vidmark open and connect to its Streamable HTTP endpoint:
+Keep Vidmark open and unlocked, then connect to its Streamable HTTP endpoint:
 
 ```bash
 claude mcp add --transport http vidmark http://127.0.0.1:31417/mcp
@@ -144,6 +144,7 @@ The desktop app uses the bundled Bun runtime, `bun:sqlite`, and pnpm.
 pnpm install
 pnpm run dev
 pnpm test
+pnpm run test:native
 pnpm run lint
 ```
 

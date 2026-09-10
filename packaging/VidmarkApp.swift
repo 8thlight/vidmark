@@ -45,8 +45,8 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     private var serverLog: FileHandle?
     private var claudeExtensionURL: URL?
     private var isTerminating = false
-    private var isAuthenticated = false
-    private var isAuthenticating = false
+    private let accessSession = VidmarkAccessSession()
+    private var isAuthenticated: Bool { accessSession.isAuthenticated }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         notificationCursor = UserDefaults.standard.integer(forKey: notificationCursorKey)
@@ -70,6 +70,8 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
+        accessSession.lock()
+        authenticationController.cancel()
         readinessTimer?.invalidate()
         notificationTimer?.invalidate()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
@@ -127,8 +129,9 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
 
     @objc private func openSecuritySettings() {
         guard isAuthenticated else { beginAuthentication(); return }
+        let revision = accessSession.revision
         authenticationController.changeAuthentication { success in
-            if success {
+            if success, self.accessSession.acceptsWork(from: revision) {
                 let alert = NSAlert()
                 alert.messageText = "Vidmark security updated"
                 alert.informativeText = "Vidmark will use \(self.authenticationController.modeDescription) the next time it is locked or opened."
@@ -152,19 +155,17 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     private func beginAuthentication() {
-        guard !isAuthenticated, !isAuthenticating else { return }
-        isAuthenticating = true
+        guard !isTerminating, let attempt = accessSession.beginAuthentication() else { return }
         showLockedState(message: authenticationController.mode == nil ? "Choose how to protect Vidmark…" : "Vidmark is locked")
         authenticationController.authenticateOrConfigure { [weak self] success in
-            guard let self else { return }
-            self.isAuthenticating = false
-            if success { self.unlockAndStart() }
-            else if !self.isTerminating { self.showLockedState(message: "Vidmark is locked") }
+            guard let self, !self.isTerminating, self.accessSession.revision == attempt else { return }
+            if self.accessSession.completeAuthentication(attempt, success: success) { self.unlockAndStart() }
+            else { self.showLockedState(message: "Vidmark is locked") }
         }
     }
 
     private func unlockAndStart() {
-        isAuthenticated = true
+        guard isAuthenticated else { return }
         retryButton.isHidden = true
         retryButton.title = "Try Again"
         progress.isHidden = false
@@ -175,17 +176,17 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     private func lockApplication() {
-        guard isAuthenticated || serverProcess?.isRunning == true else { return }
-        isAuthenticated = false
+        accessSession.lock()
+        authenticationController.cancel()
         readinessTimer?.invalidate()
         readinessTimer = nil
         notificationTimer?.invalidate()
         notificationTimer = nil
         NSApp.dockTile.badgeLabel = nil
-        stopServer()
         webView.stopLoading()
         webView.load(URLRequest(url: URL(string: "about:blank")!))
         showLockedState(message: "Vidmark is locked")
+        stopServer()
     }
 
     private func showLockedState(message: String) {
@@ -297,6 +298,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     private func launchServer() {
+        guard isAuthenticated, !isTerminating else { return }
         guard let executable = Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("VidmarkServer") else {
             showStartupError("The packaged Bun server is missing.")
             return
@@ -320,7 +322,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         process.standardError = serverLog
         process.terminationHandler = { [weak self] process in
             DispatchQueue.main.async {
-                guard let self, !self.isTerminating, self.isAuthenticated, !self.webView.isHidden else { return }
+                guard let self, !self.isTerminating, self.isAuthenticated, self.serverProcess === process else { return }
                 self.showStartupError("The local server stopped unexpectedly (code \(process.terminationStatus)).")
             }
         }
@@ -333,15 +335,17 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     private func waitForServer() {
+        let revision = accessSession.revision
         readinessAttempts = 0
         readinessTimer?.invalidate()
         readinessTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] timer in
-            guard let self else { timer.invalidate(); return }
+            guard let self, self.accessSession.acceptsWork(from: revision) else { timer.invalidate(); return }
             var request = URLRequest(url: self.appURL)
             request.timeoutInterval = 0.8
             URLSession.shared.dataTask(with: request) { _, response, _ in
                 guard let http = response as? HTTPURLResponse, (200..<500).contains(http.statusCode) else {
                     DispatchQueue.main.async {
+                        guard timer.isValid, self.accessSession.acceptsWork(from: revision) else { return }
                         self.readinessAttempts += 1
                         if self.readinessAttempts >= 120 {
                             timer.invalidate()
@@ -351,6 +355,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
                     return
                 }
                 DispatchQueue.main.async {
+                    guard timer.isValid, self.accessSession.acceptsWork(from: revision) else { return }
                     timer.invalidate()
                     self.statusLabel.stringValue = "Loading workspace…"
                     self.webView.load(URLRequest(url: self.appURL))
@@ -376,6 +381,9 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     private func showStartupError(_ message: String) {
+        guard isAuthenticated, !isTerminating else { return }
+        webView.isHidden = true
+        loadingStack.isHidden = false
         progress.stopAnimation(nil)
         progress.isHidden = true
         statusLabel.stringValue = message
@@ -383,7 +391,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     private func startNotificationPolling() {
-        guard notificationTimer == nil else { return }
+        guard isAuthenticated, notificationTimer == nil else { return }
         pollDesktopNotifications()
         let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.pollDesktopNotifications() }
         RunLoop.main.add(timer, forMode: .common)
@@ -391,6 +399,8 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     private func pollDesktopNotifications() {
+        guard isAuthenticated else { return }
+        let revision = accessSession.revision
         var components = URLComponents(url: notificationsURL, resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "after", value: String(notificationCursor)), URLQueryItem(name: "limit", value: "50")]
         guard let url = components.url else { return }
@@ -400,7 +410,10 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
             guard let self, let data, let http = response as? HTTPURLResponse, http.statusCode == 200,
                   let feed = try? JSONDecoder().decode(VidmarkNotificationFeed.self, from: data) else { return }
-            DispatchQueue.main.async { self.handleNotificationFeed(feed, requestedCursor: requestedCursor) }
+            DispatchQueue.main.async {
+                guard self.accessSession.acceptsWork(from: revision) else { return }
+                self.handleNotificationFeed(feed, requestedCursor: requestedCursor)
+            }
         }.resume()
     }
 
@@ -438,11 +451,12 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         pendingNotificationTarget = (target, entityId)
+        if !isAuthenticated { beginAuthentication(); return }
         dispatchPendingNotificationTarget()
     }
 
     private func dispatchPendingNotificationTarget() {
-        guard let pendingNotificationTarget, !webView.isLoading, webView.url != nil else { return }
+        guard isAuthenticated, !webView.isHidden, let pendingNotificationTarget, !webView.isLoading, webView.url?.scheme == "http" else { return }
         let payload: [String: String] = ["target": pendingNotificationTarget.target, "entityId": pendingNotificationTarget.entityId]
         guard let data = try? JSONSerialization.data(withJSONObject: payload), let json = String(data: data, encoding: .utf8) else { return }
         self.pendingNotificationTarget = nil
@@ -450,8 +464,15 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     private func stopServer() {
-        guard let process = serverProcess, process.isRunning else { return }
-        process.terminate()
+        if let process = serverProcess, process.isRunning {
+            process.terminationHandler = nil
+            process.terminate()
+            // A new unlock must not reuse the previous process's still-open ports.
+            let deadline = Date().addingTimeInterval(2)
+            while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            process.waitUntilExit()
+        }
         serverProcess = nil
         try? serverLog?.close()
         serverLog = nil
