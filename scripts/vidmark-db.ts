@@ -388,6 +388,10 @@ export class VidmarkDatabase {
   }
 
   upsertCourse(input: CourseInput & { active?: boolean }) {
+    return this.db.transaction(() => this.writeCourse(input))();
+  }
+
+  private writeCourse(input: CourseInput & { active?: boolean }) {
     const existing = this.db.query("SELECT * FROM courses WHERE id = ?").get(input.id) as Record<string, unknown> | null;
     const timestamp = now();
     const videoUrl = input.videoUrl ?? String(existing?.video_url ?? "");
@@ -398,6 +402,7 @@ export class VidmarkDatabase {
     const nextValues = [input.title, input.source ?? String(existing?.source ?? "YouTube"), videoUrl, input.originPrompt ?? String(existing?.origin_prompt ?? ""), input.promptCredit ?? String(existing?.prompt_credit ?? ""), input.studyGuide ?? existing?.study_guide ?? null, input.researchNotes ?? existing?.research_notes ?? null];
     const previousValues = existing ? [existing.title, existing.source, existing.video_url, existing.origin_prompt, existing.prompt_credit, existing.study_guide, existing.research_notes] : [];
     if (existing && (sourceUrl !== String(existing.source_url || existing.video_url || "") || nextValues.some((value, index) => value !== previousValues[index]))) this.prepareCourseMutation(input.id);
+    if (input.active) this.db.query("UPDATE courses SET active=0 WHERE id<>?").run(input.id);
     this.db.query(`INSERT INTO courses(id,title,source,video_url,origin_prompt,prompt_credit,study_guide,research_notes,active,revision,created_at,updated_at,video_id)
       VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,source=excluded.source,video_url=excluded.video_url,
       origin_prompt=excluded.origin_prompt,prompt_credit=excluded.prompt_credit,study_guide=COALESCE(excluded.study_guide,courses.study_guide),
@@ -488,7 +493,7 @@ export class VidmarkDatabase {
     })();
   }
 
-  listChapters(courseId: string) {
+  listChapters(courseId: string): Array<Record<string, unknown>> {
     return (this.db.query("SELECT id,position,payload_json,revision,updated_at FROM chapters WHERE course_id=? ORDER BY position").all(courseId) as Array<Record<string, unknown>>)
       .map((row) => ({ ...parseJson<Record<string, unknown>>(row.payload_json, {}), id: row.id, position: row.position, revision: row.revision, updatedAt: row.updated_at }));
   }
@@ -629,6 +634,10 @@ export class VidmarkDatabase {
   }
 
   importCourseBundle(bundle: Record<string, unknown>, options: { visibility?: "private" | "public"; globalVersion?: number; globalOwnerDeviceId?: string; globalLocked?: boolean } = {}) {
+    return this.db.transaction(() => this.writeCourseBundle(bundle, options))();
+  }
+
+  private writeCourseBundle(bundle: Record<string, unknown>, options: { visibility?: "private" | "public"; globalVersion?: number; globalOwnerDeviceId?: string; globalLocked?: boolean }) {
     const course = bundle.course && typeof bundle.course === "object" ? bundle.course as Record<string, unknown> : bundle;
     const id = String(course.id ?? course.videoId ?? "").trim();
     if (!id) throw new Error("The shared course does not contain an ID.");

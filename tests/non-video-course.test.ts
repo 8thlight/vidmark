@@ -69,6 +69,23 @@ test("metadata edits preserve the selected course when active is omitted", () =>
   expect(db.getCourse("selected")?.active).toBe(true);
 });
 
+test("selecting a course clears other active courses in the same transaction", () => {
+  db.upsertCourse({ id: "first-active", title: "First", active: true });
+  db.upsertCourse({ id: "second-active", title: "Second", active: true });
+  expect(db.listCourses().filter(course => course.active).map(course => course.id)).toEqual(["second-active"]);
+});
+
+test("rejected imports and course writes do not change metadata or selected course", () => {
+  const before = db.getCourse("reading-course");
+  const selected = db.listCourses().filter(course => course.active).map(course => course.id);
+  const invalid = { id: "reading-course", title: "Should not persist", active: true, chapters: [{ id: "bad", videos: [{ title: "Bad", url: "javascript:alert(1)" }] }] };
+  expect(() => db.upsertCourse(invalid)).toThrow();
+  expect(db.getCourse("reading-course")).toEqual(before);
+  expect(() => db.importCourseBundle(invalid)).toThrow();
+  expect(db.getCourse("reading-course")).toEqual(before);
+  expect(db.listCourses().filter(course => course.active).map(course => course.id)).toEqual(selected);
+});
+
 test("reading courses do not inherit the CCA exam or its start controls", () => {
   const html = renderToStaticMarkup(createElement(ExamMode, { questionBank: [], courseId: "reading-course" }));
   expect(html).toContain("No certification exam format has been configured");

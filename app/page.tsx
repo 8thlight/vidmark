@@ -4,8 +4,9 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "
 import { ClipboardCheck, Copy, Ellipsis, Eye, EyeOff, FileText, LibraryBig, Mail, MessageCircle, Mic, Moon, NotebookPen, PanelLeft, Settings2, SunMedium, UsersRound } from "lucide-react";
 import { AgentProviderDialog } from "./agent-provider";
 import { ccaFoundationsOriginPrompt, ccaFoundationsPromptCredit, composeCourseBuildPrompt, kubernetesCourseOriginPrompt, kubernetesCoursePromptCredit, vidmarkMasterCourseBuildPrompt } from "./course-prompts";
-import { domains, examBank as bundledExamBank } from "./exam-data";
+import { examBank as bundledExamBank } from "./exam-data";
 import { ExamMode } from "./exam-mode";
+import { courseDomains } from "./exam-store";
 import { syncMcpState, TranscriptCue, VIDMARK_MCP_URL } from "./mcp-sync";
 import { NoteSession } from "./note-session";
 import { readNotes, StudyNote } from "./notes-store";
@@ -60,7 +61,7 @@ const chapterSectionIds = [
   "claude-code-ci-cd",
   "scenario-based-architecture",
 ] as const;
-type PracticeScope = "full" | (typeof chapterSectionIds)[number];
+type PracticeScope = string;
 
 const notes: Note[] = [
   { time: 47, title: "How to use the course", chapter: "Introduction", kind: "exam", text: "Treat each domain as an architecture decision space. The exam rewards practical judgment more than memorized product trivia." },
@@ -134,7 +135,9 @@ export default function Home() {
   const [savedNotes, setSavedNotes] = useState<StudyNote[]>([]);
   const [mainMode, setMainMode] = useState<"course" | "notes" | "exam">("course");
   const [theme, setTheme] = useState<"light" | "dark">("light");
-  const [questionBank, setQuestionBank] = useState(bundledExamBank);
+  const [bankState, setBankState] = useState({ courseId: VIDEO_ID, questions: bundledExamBank });
+  const questionBank = useMemo(() => bankState.courseId === activeVideoId ? bankState.questions : [], [bankState, activeVideoId]);
+  const setQuestionBank = (questions: typeof bundledExamBank) => setBankState({ courseId: activeVideoId, questions });
   const [profile, setProfile] = useState<LearnerProfile | null>(null);
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -146,6 +149,7 @@ export default function Home() {
   const primaryVideoId = youtubeId(activeVideo.videoUrl ?? (bundledVideoIds.has(activeVideo.id) ? activeVideo.id : ""));
   const courseSourceUrl = webUrl(activeVideo.sourceUrl || activeVideo.videoUrl || (primaryVideoId ? `https://www.youtube.com/watch?v=${primaryVideoId}` : ""));
   const isStarter = activeVideo.id === VIDEO_ID;
+  const domains = courseDomains(activeVideoId, questionBank);
   const isBundledCourse = bundledVideoIds.has(activeVideo.id);
   const sectionQuestionCounts = useMemo(() => chapterSectionIds.map((sectionId) => questionBank.filter((question) => question.sectionId === sectionId).length), [questionBank]);
   const updateUnreadInbox = useCallback((count: number) => setUnreadInbox(count), []);
@@ -185,7 +189,7 @@ export default function Home() {
   useEffect(() => {
     let active = true;
     const fallback = activeVideoId === VIDEO_ID ? bundledExamBank : [];
-    void getCourseQuestions(activeVideoId, fallback).then((questions) => { if (active) { setQuestionBank(questions); setQuestionIndex(0); setPracticeScope("full"); } });
+    void getCourseQuestions(activeVideoId, fallback).then((questions) => { if (active) { setBankState({ courseId: activeVideoId, questions }); setQuestionIndex(0); setPracticeScope("full"); setAnswers([]); setSelectedChoice(null); setPracticeComplete(false); setHelpedIds([]); setHelpMode(false); } });
     return () => { active = false; };
   }, [activeVideoId]);
 
@@ -245,7 +249,7 @@ export default function Home() {
     return source.filter((item) => !needle || item.text.toLowerCase().includes(needle));
   }, [imported, isStarter, query]);
   const practiceQuestions = practiceScope === "full" ? questionBank : questionBank.filter((question) => question.sectionId === practiceScope);
-  const activeQuestion = practiceQuestions[questionIndex] ?? bundledExamBank[0];
+  const activeQuestion = practiceQuestions[questionIndex] ?? practiceQuestions[0] ?? bundledExamBank[0];
   const activeChapterIndex = chapterSectionIds.indexOf(activeQuestion.sectionId as (typeof chapterSectionIds)[number]);
   const courseChapters = isStarter ? chapters.map((chapter, index) => ({ ...chapter, id: chapterSectionIds[index] })) : (activeVideo.chapters ?? []).map((chapter, index) => ({ id: String(chapter.id ?? `chapter-${index + 1}`), title: String(chapter.title ?? `Chapter ${index + 1}`), summary: String(chapter.summary ?? ""), start: Number(chapter.start ?? 0), duration: "", tags: [] as string[] }));
   const currentSection = isStarter ? courseChapters[activeChapterIndex] ?? courseChapters[0] : courseChapters.find((chapter) => chapter.id === readingChapterId) ?? courseChapters[0] ?? { id: "unsorted", title: "Course notes", summary: "", start: 0, duration: "", tags: [] };
@@ -463,10 +467,10 @@ export default function Home() {
             <div className="course-video-heading"><span className="source-pill">{activeVideo.source.toUpperCase()} · COURSE</span><h1>{activeVideo.title}</h1></div>
             {primaryVideoId ? <div className="player-frame">
               <iframe key={playerKey} src={`https://www.youtube-nocookie.com/embed/${primaryVideoId}?start=${activeTime}&rel=0&modestbranding=1`} title={`${activeVideo.title} video player`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerPolicy="strict-origin-when-cross-origin" allowFullScreen />
-            </div> : <section className="reading-source"><FileText aria-hidden="true" /><div><span>READING-BASED COURSE</span><h2>Learn from the source, at your own pace.</h2><p>This course does not require a video. Explore its chapters, study guide, and optional supporting videos.</p>{courseSourceUrl ? <a href={courseSourceUrl} target="_blank" rel="noreferrer">Open course source ↗</a> : null}</div></section>}
+            </div> : null}
             <div className="video-heading">
-              <div><span className="source-pill">{isStarter ? "CURRENT COURSE SECTION" : activeVideo.source.toUpperCase()}</span><h1>{isStarter ? currentSection.title : activeVideo.title}</h1><p>{isStarter ? currentSection.summary : activeVideo.studyGuide ? "The course material is stored locally and is available to study or share." : "Connect an MCP-capable agent to build from the source material. Video transcripts are optional for reading-based courses."}</p></div>
-              {primaryVideoId ? <a className="youtube-link" href={`https://www.youtube.com/watch?v=${primaryVideoId}&t=${activeTime}s`} target="_blank" rel="noreferrer">Open on YouTube ↗</a> : null}
+              <div><span className="source-pill">{isStarter ? "CURRENT COURSE SECTION" : activeVideo.source.toUpperCase()}</span>{isStarter ? <h1>{currentSection.title}</h1> : null}<p>{isStarter ? currentSection.summary : activeVideo.studyGuide ? "The course material is stored locally and is available to study or share." : "Connect an MCP-capable agent to build from the source material. Video transcripts are optional for reading-based courses."}</p></div>
+              {primaryVideoId ? <a className="youtube-link" href={`https://www.youtube.com/watch?v=${primaryVideoId}&t=${activeTime}s`} target="_blank" rel="noreferrer">Open on YouTube ↗</a> : courseSourceUrl ? <a className="youtube-link" href={courseSourceUrl} target="_blank" rel="noreferrer">Open course source ↗</a> : null}
             </div>
 
             <div className="stat-row"><div><strong>{isStarter ? "12h 38m" : primaryVideoId ? "Video" : "Reading"}</strong><span>{isStarter ? "runtime" : "format"}</span></div><div><strong>{isStarter ? "13" : activeVideo.chapters?.length ?? 0}</strong><span>chapters</span></div><div><strong>{questionBank.length}</strong><span>{isStarter ? "exam scenarios" : "practice questions"}</span></div><div><strong>{isStarter ? "6" : (activeVideo.chapters ?? []).reduce((count, chapter) => count + (Array.isArray(chapter.videos) ? chapter.videos.length : 0), 0)}</strong><span>{isStarter ? "visual references" : "supporting videos"}</span></div></div>
@@ -483,12 +487,12 @@ export default function Home() {
                 ))}
               </div>
             </section> : <section className="new-notebook course-setup"><span>{activeVideo.studyGuide ? "COURSE READY" : "COURSE SETUP REQUIRED"}</span><h2>{activeVideo.studyGuide ? `${activeVideo.chapters?.length ?? 0} chapters and ${activeVideo.questionCount ?? 0} questions are available.` : "This course has not been built yet."}</h2><p>{activeVideo.studyGuide ? `The build is stored in local SQLite${activeVideo.conceptGraphRevision ? ` with concept graph revision ${activeVideo.conceptGraphRevision}` : ""}. You can study it, revise it through MCP, or share the complete course.` : "The source and its credited build instructions are ready. The agent reads source material and acquires captions only when a primary video is provided."}</p><div className="course-setup-actions"><button onClick={() => setAgentDialog("build")}>{activeVideo.studyGuide ? "Update with agent" : "Build with agent"}</button><button className="secondary-action" onClick={() => void viewBuildPrompt()}>View build prompt</button>{primaryVideoId ? <button className="secondary-action" onClick={() => { setView("transcript"); uploadRef.current?.click(); }}>{activeVideo.transcript.length ? "Replace transcript" : "Import transcript"}</button> : null}</div>{setupStatus ? <p className="course-setup-status" role="status">{setupStatus}</p> : <p className="course-setup-help">Claude can read the source through its tools, coordinate course work, and save the result directly to SQLite.</p>}</section>}
-            {!isStarter && Boolean(activeVideo.chapters?.length) ? <CourseChapters chapters={activeVideo.chapters ?? []} query={query} onNotes={(id) => { setReadingChapterId(id); setNotesOpen(true); }} /> : null}
+            {!isStarter && Boolean(activeVideo.chapters?.length) ? <CourseChapters chapters={activeVideo.chapters ?? []} query={query} onNotes={(id) => { setReadingChapterId(id); setNotesOpen(true); }} onPractice={(id) => { const pool = questionBank.filter(q => q.sectionId === id); if (!pool.length) return; setReadingChapterId(id); setPracticeScope(id); setQuestionIndex(0); setSelectedChoice(answers.find(a => a.questionId === pool[0].id)?.selected ?? null); setHelpMode(false); setPracticeComplete(false); setView("practice"); }} questionBank={questionBank} /> : null}
           </section> : mainMode === "notes" ? <section className="notes-index-main">
             <header className="notes-index-head"><div><span>COURSE JOURNAL · {courseNotes.length}</span><h1>Notes by chapter</h1><p>Your complete local note index, grouped by chapter and ordered by last modified.</p></div><button type="button" onClick={() => setNotesOpen(true)}><NotebookPen aria-hidden="true" /> Add note</button></header>
             <VoiceNotePlaylist notes={courseVoiceNotes} />
             {noteGroups.length || unsortedNotes.length ? <div className="notes-index-groups">{noteGroups.map((group) => <section key={group.chapter.title}><header><h2>{group.chapter.title}</h2><span>{group.notes.length} note{group.notes.length === 1 ? "" : "s"}</span></header>{group.notes.map((note) => <article key={note.id}><div className={`note-kind ${note.source}`} title={note.source === "voice" ? "Voice note" : "Text note"}>{note.source === "voice" ? <Mic aria-hidden="true" /> : <FileText aria-hidden="true" />}</div><div><span>{note.sharedFromPeer ? `Shared by ${note.authorProfile?.name ?? "a Vidmark user"}` : "Last modified"} · {new Date(note.updatedAt).toLocaleString()}</span>{note.source === "voice" ? <VoiceNote note={note} compact /> : <p>{note.text}</p>}</div></article>)}</section>)}{unsortedNotes.length > 0 && <section><header><h2>Unsorted notes</h2><span>{unsortedNotes.length} note{unsortedNotes.length === 1 ? "" : "s"}</span></header>{unsortedNotes.map((note) => <article key={note.id}><div className={`note-kind ${note.source}`}>{note.source === "voice" ? <Mic aria-hidden="true" /> : <FileText aria-hidden="true" />}</div><div><span>{note.sharedFromPeer ? `Shared by ${note.authorProfile?.name ?? "a Vidmark user"}` : "Last modified"} · {new Date(note.updatedAt).toLocaleString()}</span>{note.source === "voice" ? <VoiceNote note={note} compact /> : <p>{note.text}</p>}</div></article>)}</section>}</div> : <div className="notes-index-empty">No notes yet. Use <b>Add note</b> to capture a text or voice note for the current chapter.</div>}
-          </section> : <ExamMode questionBank={questionBank} courseId={activeVideoId} />}
+          </section> : <ExamMode key={activeVideoId} questionBank={questionBank} courseId={activeVideoId} courseName={activeVideo.title} />}
 
           {mainMode !== "exam" && <aside className="notebook" ref={notebookRef}>
             <div className="notebook-head"><div className="tabs" role="tablist"><button className={view === "guide" ? "active" : ""} onClick={() => setView("guide")}>Study guide</button><button className={view === "practice" ? "active" : ""} onClick={() => setView("practice")}>Practice</button>{primaryVideoId || imported.length ? <button className={view === "transcript" ? "active" : ""} onClick={() => setView("transcript")}>Transcript</button> : null}<button className={view === "notes" ? "active" : ""} onClick={() => setView("notes")}>Notes</button></div><div className="notebook-menu"><button className="icon-button" type="button" aria-label="More practice options" aria-expanded={moreOpen} onClick={() => setMoreOpen((open) => !open)}><Ellipsis aria-hidden="true" /></button>{moreOpen && <div className="more-menu" role="menu"><button type="button" role="menuitem" onClick={startFullBank}>Start full {questionBank.length}-question bank</button><button type="button" role="menuitem" onClick={resetPractice}>Reset all practice progress</button></div>}</div></div>
@@ -518,17 +522,17 @@ export default function Home() {
                 <div className="caption-note">Import caption files you have permission to use. They stay on this device, are attached to this course, and are available to the local MCP server.</div>
                 <div className="transcript-feed">{filteredTranscript.slice(0, 500).map((item, index) => <button key={`${item.time}-${index}`} className="transcript-line" onClick={() => seek(item.time)}><time>{formatTime(item.time)}</time><span>{item.text}</span></button>)}{!filteredTranscript.length && <div className="empty-state">{query ? `No transcript lines match “${query}”.` : "No transcript imported yet."}</div>}</div>
               </>
-            ) : !questionBank.length ? (
+            ) : !practiceQuestions.length ? (
               <div className="empty-state">Build or import course questions to begin practice.</div>
             ) : practiceComplete ? (
               <section className="results-panel">
                 <span className="eyebrow">{practiceScope === "full" ? "BLOCK COMPLETE" : "SECTION COMPLETE"}</span>
                 <div className="score-ring"><strong>{correctCount}/{scoredCount || practiceQuestions.length}</strong><small>{Math.round((correctCount / (scoredCount || practiceQuestions.length)) * 100)}%</small></div>
-                <h2>{practiceScope === "full" ? "Weighted practice result" : `${currentSection.title} result`}</h2>
-                <p>{practiceScope === "full" ? "This measures this published-blueprint practice block, not readiness against a live question bank." : `You answered ${correctCount} of ${scoredCount || practiceQuestions.length} questions correctly in this section. Blueprint weights apply to the full bank, not this focused drill.`}</p>
+                <h2>{practiceScope === "full" ? (isStarter ? "Weighted practice result" : "Practice result") : `${currentSection.title} result`}</h2>
+                <p>{practiceScope === "full" ? (isStarter ? "This measures this published-blueprint practice block, not readiness against a live question bank." : "Your score measures this course’s original practice questions, not an official certification assessment.") : `You answered ${correctCount} of ${scoredCount || practiceQuestions.length} questions correctly in this section. This is a focused chapter drill.`}</p>
                 {helpedIds.length > 0 && <p className="help-note">{helpedIds.length} question{helpedIds.length === 1 ? " was" : "s were"} revealed with Help me and left out of the score.</p>}
                 <div className="domain-results">
-                  {displayedDomainResults.map((result) => <div key={result.id}><span><b>{result.short}</b><small>{practiceScope === "full" ? `${result.weight}% blueprint weight` : `${result.total} question${result.total === 1 ? "" : "s"} in this section`}</small></span><strong>{result.correct}/{result.total}</strong></div>)}
+                  {displayedDomainResults.map((result) => <div key={result.id}><span><b>{result.short}</b><small>{practiceScope === "full" ? `${result.weight}% ${isStarter ? "blueprint weight" : "of bank"}` : `${result.total} question${result.total === 1 ? "" : "s"} in this section`}</small></span><strong>{result.correct}/{result.total}</strong></div>)}
                 </div>
                 <div className="diagnostic">
                   <b>Miss pattern</b>
@@ -556,7 +560,7 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="progress-track"><span style={{ width: `${((questionIndex + (selectedChoice ? 1 : 0)) / practiceQuestions.length) * 100}%` }} /></div>
-                <div className="domain-chip">{domains[activeQuestion.domain].name} · {domains[activeQuestion.domain].weight}%</div>
+                <div className="domain-chip">{domains[activeQuestion.domain]?.name ?? activeQuestion.domain} · {domains[activeQuestion.domain]?.weight ?? 0}% {isStarter ? "blueprint" : "of bank"}</div>
                 <p className="scenario">{activeQuestion.scenario}</p>
                 <div className="answer-list">
                   {(Object.entries(activeQuestion.options) as [Choice, string][]).map(([letter, option]) => {

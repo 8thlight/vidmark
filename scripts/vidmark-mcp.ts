@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import { composeCourseBuildPrompt } from "../app/course-prompts";
+import { webUrl, youtubeId } from "../app/course-source";
 import { acquireYouTubeTranscript } from "./transcript-acquisition";
 import { getSystemPrompt } from "../app/system-prompts";
 import { getSystemPromptSettings, readSystemPromptOverrides, writeSystemPromptOverrides } from "./system-prompt-store";
@@ -13,6 +14,7 @@ const MCP_PORT = Number(process.env.VIDMARK_MCP_PORT ?? 31417);
 const choice = z.enum(["A", "B", "C", "D"]);
 const questionSchema = z.object({
   id: z.string().min(1), enabled: z.boolean().default(true), sectionId: z.string().min(1), domainId: z.string().min(1),
+  chapter: z.string().optional(), domainLabel: z.string().optional(),
   difficulty: z.enum(["foundational", "standard", "advanced"]), mode: z.enum(["standard", "hard"]), scenario: z.string().min(1), question: z.string().min(1),
   options: z.object({ A: z.object({ text: z.string().min(1), rationale: z.string().min(1) }), B: z.object({ text: z.string().min(1), rationale: z.string().min(1) }), C: z.object({ text: z.string().min(1), rationale: z.string().min(1) }), D: z.object({ text: z.string().min(1), rationale: z.string().min(1) }) }),
   correctAnswer: choice,
@@ -39,7 +41,15 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
       const instruction = course ? composeCourseBuildPrompt(String(course.title), String(course.id), String(course.coursePrompt), String(course.promptCredit), getSystemPrompt("courseBuilderMaster", storedPrompts.overrides)) : `Course ${courseId} was not found. Call list_courses and choose a valid course ID before continuing.`;
       return { messages: [{ role: "user" as const, content: { type: "text" as const, text: instruction } }] };
     });
-    server.registerTool("upsert_course", { description: "Create or update a course from a web source or optional video. Set sourceUrl for its source material; omit videoUrl for a non-video course. Course-specific prompt and credit are required.", inputSchema: z.object({ courseId: z.string().min(1), title: z.string().min(1), source: z.string().default("Web"), sourceUrl: z.string().url().optional(), videoUrl: z.union([z.string().url(), z.literal("")]).optional(), coursePrompt: z.string().min(1), promptCredit: z.string().min(1) }) }, async (input) => { const saved = store.upsertCourse({ id: input.courseId, title: input.title, source: input.source, videoUrl: input.videoUrl, sourceUrl: input.sourceUrl, originPrompt: input.coursePrompt, promptCredit: input.promptCredit }); return textResult({ saved: input.courseId, revision: saved?.revision }); });
+    server.registerTool("upsert_course", { description: "Create or update a course from a web source or optional YouTube video. New courses require sourceUrl or videoUrl. Omit videoUrl for a non-video course. Course-specific prompt and credit are required.", inputSchema: z.object({ courseId: z.string().min(1), title: z.string().min(1), source: z.string().optional(), sourceUrl: z.string().url().optional(), videoUrl: z.union([z.string().url(), z.literal("")]).optional(), coursePrompt: z.string().min(1), promptCredit: z.string().min(1) }) }, async (input) => {
+      const existing = store.getCourse(input.courseId);
+      const videoUrl = input.videoUrl ?? String(existing?.videoUrl ?? "");
+      const sourceUrl = input.sourceUrl ?? String(existing?.sourceUrl || videoUrl);
+      if (!webUrl(sourceUrl)) throw new Error("A course requires an HTTP(S) sourceUrl or videoUrl.");
+      if (input.videoUrl && !youtubeId(input.videoUrl)) throw new Error("Primary video URLs must be supported YouTube links. Use sourceUrl for other resources or chapter videos for supporting media.");
+      const saved = store.upsertCourse({ id: input.courseId, title: input.title, source: input.source ?? (existing ? undefined : videoUrl ? "YouTube" : "Web"), videoUrl, sourceUrl, originPrompt: input.coursePrompt, promptCredit: input.promptCredit });
+      return textResult({ saved: input.courseId, revision: saved?.revision });
+    });
     server.registerTool("save_course_build", { description: "Replace reviewed course-level artifacts, including its concept graph. Prefer granular tools when changing an individual artifact.", inputSchema: z.object({ courseId: z.string().min(1), studyGuide: z.string().optional(), researchNotes: z.string().optional(), chaptersJson: z.string().optional().describe("Array of chapters: id, title, summary, optional content, learningObjectives, and videos: [{title, url, startSeconds?}]. Timestamps are optional for non-video courses."), questionsJson: z.string().optional(), conceptGraphJson: z.string().optional() }) }, async ({ courseId, studyGuide, researchNotes, chaptersJson, questionsJson, conceptGraphJson }) => {
       const course = store.getCourse(courseId); if (!course) return textResult({ error: `Course ${courseId} was not found.` });
       const chapters = parseArray(chaptersJson, "chaptersJson"); const questions = parseArray(questionsJson, "questionsJson"); const conceptGraph = conceptGraphJson ? parseRecord(conceptGraphJson, "conceptGraphJson") : undefined;
@@ -114,6 +124,7 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
       if (url.pathname === "/api/courses" && request.method === "GET") return Response.json({ courses: store.listCourses() }, { headers });
       if (url.pathname === "/api/courses" && request.method === "POST") {
         const input = z.object({ id: z.string().trim().min(1), title: z.string().trim().min(1), source: z.string().min(1), sourceUrl: z.string().url(), videoUrl: z.union([z.string().url(), z.literal("")]).default(""), originPrompt: z.string().trim().min(1), promptCredit: z.string().trim().min(1) }).parse(await request.json());
+        if (input.videoUrl && !youtubeId(input.videoUrl)) return Response.json({ error: "Primary video URLs must be supported YouTube links. Use the source URL for other resources." }, { status: 400, headers });
         if (store.getCourse(input.id)) return Response.json({ error: "This course already exists. Open it from the library." }, { status: 409, headers });
         return Response.json({ course: store.upsertCourse({ ...input, active: true }) }, { status: 201, headers });
       }

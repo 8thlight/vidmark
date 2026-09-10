@@ -11,7 +11,7 @@ Vidmark is a local-first macOS study workspace with an integrated MCP server. It
 ## Features
 
 - Build courses from web sources or YouTube videos with Claude or another MCP-capable agent. A primary video is optional.
-- Organize reading-based chapters with optional supporting videos; chapter media stays with shared course bundles.
+- Organize reading-based chapters with optional supporting videos, chapter practice, and course-specific timed exams. Questions and concept graphs stay with shared course bundles.
 - Acquire available public YouTube captions when a transcript is not supplied.
 - Study with timestamped chapters, transcript search, text and voice notes, concept graphs, practice questions, and exams. Voice notes use Apple Speech on-device when available.
 - Customize the global model instructions Vidmark uses for course building and specialist agents.

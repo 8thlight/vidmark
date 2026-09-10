@@ -10,6 +10,11 @@ const temporaryDirectories: string[] = [];
 afterEach(async () => { await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
 describe("local system prompt overrides", () => {
+  test("reading sources retain requested exam scope without fabricated media", () => {
+    expect(vidmarkMasterCourseBuildPrompt).toContain("Do not downgrade a requested exam-preparation course");
+    expect(vidmarkMasterCourseBuildPrompt).toContain("original, source-grounded material");
+    expect(vidmarkMasterCourseBuildPrompt).toContain("practice drills without fabricated media");
+  });
   test("lists every model instruction with its built-in default", () => {
     const prompts = listSystemPromptSettings();
     expect(prompts.map((prompt) => prompt.id)).toEqual(["courseBuilderMaster", "coordinatorRuntime", "coordinatorContinue", "specialist", "connectionProbe"]);

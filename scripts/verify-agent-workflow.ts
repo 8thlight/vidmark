@@ -60,6 +60,15 @@ try {
   }
 
   const courseId = "agntFlow001";
+  const readingInput = { courseId: "reading-acceptance", title: "Reading exam", coursePrompt: "Create an original practice exam.", promptCredit: "Vidmark acceptance verifier" };
+  const missingSource = await request("tools/call", { name: "upsert_course", arguments: readingInput });
+  if (!missingSource.isError || service.store.getCourse(readingInput.courseId)) throw new Error("MCP accepted a new course without a source.");
+  const unsupportedVideo = await request("tools/call", { name: "upsert_course", arguments: { ...readingInput, videoUrl: "https://example.com/video.mp4" } });
+  if (!unsupportedVideo.isError) throw new Error("MCP accepted an unsupported primary video.");
+  await request("tools/call", { name: "upsert_course", arguments: { ...readingInput, source: "Official resources", sourceUrl: "https://example.com/course" } });
+  await request("tools/call", { name: "upsert_course", arguments: { ...readingInput, title: "Updated reading exam" } });
+  const readingCourse = service.store.getCourse(readingInput.courseId);
+  if (readingCourse?.source !== "Official resources" || readingCourse.sourceUrl !== "https://example.com/course" || readingCourse.videoUrl) throw new Error("Metadata-only MCP update did not preserve reading source fields.");
   await request("tools/call", { name: "upsert_course", arguments: { courseId, title: "Agent workflow acceptance course", source: "YouTube", videoUrl: `https://www.youtube.com/watch?v=${courseId}`, coursePrompt: "Build a concise employee course and delegate bounded chapter, assessment, graph, and QA tasks to subagents.", promptCredit: "Vidmark acceptance verifier" } });
   await request("tools/call", { name: "replace_transcript", arguments: { courseId, cues: [{ time: 0, text: "Vidmark stores each course in local SQLite." }, { time: 12, text: "Claude retrieves the course build prompt and delegates specialist work." }, { time: 26, text: "The completed course can be shared through the encrypted relay." }] } });
 

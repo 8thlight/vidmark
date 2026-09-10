@@ -59,7 +59,7 @@ export const getCourseComments = async (videoId: string) => (await responseJson<
 export const postCourseComment = async (courseId: string, body: string, parentId?: string) => (await responseJson<{ comment: CourseComment }>(await fetch(`${VIDMARK_LOCAL_ORIGIN}/api/comments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ courseId, body, parentId }) }))).comment;
 
 type BankPayload = {
-  id?: string; sectionId?: string; domainId?: string; difficulty?: ExamQuestion["difficulty"]; mode?: ExamQuestion["mode"]; scenario?: string; question?: string;
+  id?: string; chapter?: string; sectionId?: string; domainId?: string; domainLabel?: string; difficulty?: ExamQuestion["difficulty"]; mode?: ExamQuestion["mode"]; scenario?: string; question?: string;
   options?: Record<"A" | "B" | "C" | "D", { text?: string; rationale?: string }>;
   correctAnswer?: "A" | "B" | "C" | "D"; grading?: { temptingDistractor?: "A" | "B" | "C" | "D"; principle?: string; hinge?: string; missType?: "judgment" | "recall" };
   sources?: Array<{ label?: string; url?: string }>;
@@ -74,7 +74,7 @@ export const getCourseQuestions = async (courseId: string, fallback: ExamQuestio
       const value = stored.payload as BankPayload;
       const source = value.sources?.[0];
       return {
-        id: index + 1, bankId: String(value.id ?? stored.id), chapter: chapterBySection.get(String(value.sectionId)) ?? String(value.sectionId ?? "Course"), sectionId: String(value.sectionId ?? "course"), domain: (["architecture", "tools", "code", "prompting", "context"].includes(String(value.domainId)) ? value.domainId : "architecture") as ExamQuestion["domain"], difficulty: value.difficulty ?? "standard", mode: value.mode ?? "standard",
+        id: index + 1, bankId: String(value.id ?? stored.id), chapter: value.chapter ?? chapterBySection.get(String(value.sectionId)) ?? String(value.sectionId ?? "Course"), sectionId: String(value.sectionId ?? "course"), domain: String(value.domainId ?? "general"), domainLabel: value.domainLabel, difficulty: value.difficulty ?? "standard", mode: value.mode ?? "standard",
         scenario: [value.scenario, value.question].filter(Boolean).join("\n\n"),
         options: { A: value.options?.A?.text ?? "", B: value.options?.B?.text ?? "", C: value.options?.C?.text ?? "", D: value.options?.D?.text ?? "" },
         rationales: { A: value.options?.A?.rationale ?? "", B: value.options?.B?.rationale ?? "", C: value.options?.C?.rationale ?? "", D: value.options?.D?.rationale ?? "" },
