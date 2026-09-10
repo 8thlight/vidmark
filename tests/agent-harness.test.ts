@@ -149,6 +149,32 @@ test("CLI coordinator requires BOTH a successful process result and a complete M
   expect(debug.entries().some(e => e.event === "build.complete")).toBe(true);
 });
 
+test("large CLI banks can be staged incrementally and committed atomically with full validation", async () => {
+  makeCourse("staged");
+  const session = createCourseAgentSession(db, "staged", {}, async () => ({ ok: true }), () => {});
+  const call = (name: string, args: Record<string, unknown>) => rpc(session.url, "tools/call", { name, arguments: { courseId: "staged", ...args } });
+  const smallArtifacts = { studyGuide: artifacts.studyGuide, researchNotes: artifacts.researchNotes, chapters: artifacts.chapters, conceptGraph: artifacts.conceptGraph };
+  try {
+    await call("set_course_build_requirements", { requirements: { questionCount: 2 } });
+    expect((await call("upsert_course_question", { question: fixture })).isError).not.toBe(true);
+    expect(db.listQuestions("staged").total).toBe(0);
+    expect((await call("save_course_build", smallArtifacts)).isError).toBe(true);
+    expect(db.getCourse("staged")?.chapters.length).toBe(0);
+    expect(session.saved).toBe(false);
+    await call("upsert_course_question", { question: { ...fixture, id: "q2", question: "A distinct second question?" } });
+    expect((await call("save_course_build", smallArtifacts)).isError).not.toBe(true);
+    expect(session.saved).toBe(true);
+    expect(db.listQuestions("staged").total).toBe(2);
+    expect(db.getQuestion("staged", "q1")?.qaReview).toBeNull();
+    expect((await call("upsert_course_question", { question: fixture })).isError).toBe(true);
+  } finally { session.close(); }
+  makeCourse("cancel-staged");
+  const cancelled = createCourseAgentSession(db, "cancel-staged", {}, async () => ({ ok: true }), () => {});
+  await rpc(cancelled.url, "tools/call", { name: "upsert_course_question", arguments: { courseId: "cancel-staged", question: fixture } });
+  cancelled.close();
+  expect(db.listQuestions("cancel-staged").total).toBe(0);
+});
+
 test("settings API round trips preferences, rejects foreign origins and recovers active build status", async () => {
   const provider = startModelProviderServer(join(root, "provider.json"), db.path, join(root, "prompts.json"), 0);
   const url = `http://127.0.0.1:${provider.port}`;

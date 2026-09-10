@@ -54,6 +54,17 @@ test("QA asterisks reflect exact content, persist across restart, and return aft
   expect(db.getQuestion("quality", "q1")?.revision).toBe(changed.revision);
 });
 
+test("duplicate question detection normalizes case and whitespace before committing", () => {
+  db.upsertCourse({ id: "duplicates", title: "Duplicates", sourceUrl: "https://example.com", studyGuide: "Original" });
+  db.setBuildRequirements("duplicates", { questionCount: 2 });
+  expect(() => db.saveCourseBuild("duplicates", { studyGuide: "Changed", chapters: [chapter], questions: [
+    { ...question, id: "first", question: "What is the purpose?" },
+    { ...question, id: "second", question: "WHAT  is\n the purpose?" },
+  ] })).toThrow("Duplicate question text");
+  expect(db.getCourse("duplicates")?.studyGuide).toBe("Original");
+  expect(db.listQuestions("duplicates").total).toBe(0);
+});
+
 test("instructions preserve identity, make QA optional, and contain no model catalog", () => {
   const prompts = systemPromptDefinitions.map(p => p.defaultValue).join("\n");
   expect(prompts).toContain("QA is optional");

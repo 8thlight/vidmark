@@ -58,6 +58,8 @@ The sidebar shows your saved provider and model above Settings. Hover or focus i
 
 CLI builds use your existing account and usage limits. They receive a temporary MCP connection restricted to the selected course, without changing global MCP configuration. Course material is sent to the selected provider. Start or cancel builds from the course overview; artifacts already saved remain in SQLite. Completion requires a successful agent result and a complete course saved through MCP.
 
+For large question banks, the CLI can stage questions incrementally and commit the complete course atomically. Incomplete or cancelled staging does not replace the library’s existing questions.
+
 ## MCP client integration
 
 ### Claude Desktop

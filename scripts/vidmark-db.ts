@@ -430,7 +430,7 @@ export class VidmarkDatabase {
       if (questions) {
         if (requirements.questionCount && questions.length !== requirements.questionCount) throw new Error(`Expected ${requirements.questionCount} questions, received ${questions.length}. No artifacts saved.`);
         if (new Set(questions.map(q => q.id)).size !== questions.length) throw new Error("Question IDs must be unique.");
-        if (new Set(questions.map(q => q.question.toLowerCase().replace(/\\s+/g, " ").trim())).size !== questions.length) throw new Error("Duplicate question text.");
+        if (new Set(questions.map(q => q.question.toLowerCase().replace(/\s+/g, " ").trim())).size !== questions.length) throw new Error("Duplicate question text.");
         const chapterIds = new Set((chapters ?? course.chapters).map(c => String(c.id)));
         for (const q of questions) {
           if (!chapterIds.has(q.sectionId)) throw new Error(`Question ${q.id} references an unknown chapter.`);
