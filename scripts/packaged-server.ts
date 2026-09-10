@@ -6,6 +6,7 @@ import { startProdServer } from "../node_modules/vinext/dist/server/prod-server.
 import { startVidmarkMcpServer } from "./vidmark-mcp";
 import { startModelProviderServer } from "./model-provider";
 import { startNoteStorageServer } from "./note-storage";
+import { requireNativeServiceLease } from "./native-service-lease";
 
 const APP_PORT = 3010;
 const TRANSCRIPTION_PORT = 31415;
@@ -17,6 +18,8 @@ const packagedResources = resolve(executableDir, "../Resources");
 const isPackaged = process.execPath.includes(".app/Contents/MacOS/");
 const resourcesDir = isPackaged ? packagedResources : sourceRoot;
 const transcriberPath = process.env.VIDMARK_TRANSCRIBER_PATH || (isPackaged ? join(executableDir, "VidmarkTranscriber") : join(sourceRoot, "build", "VidmarkTranscriber"));
+const activeTranscribers = new Set<() => void>();
+process.once("exit", () => { for (const stop of activeTranscribers) stop(); });
 
 const appIsReady = async () => {
   try { return (await fetch(APP_URL, { signal: AbortSignal.timeout(800) })).ok; }
@@ -31,6 +34,8 @@ const openApp = () => {
 const runTranscriber = async (arguments_: string[]) => {
   if (!(await Bun.file(transcriberPath).exists())) throw new Error("Apple on-device transcription is unavailable. The recording can still be saved without a transcript.");
   const child = Bun.spawn([transcriberPath, ...arguments_], { stdout: "pipe", stderr: "pipe" });
+  const stop = () => child.kill("SIGTERM");
+  activeTranscribers.add(stop);
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     const exitCode = await Promise.race([
@@ -45,10 +50,13 @@ const runTranscriber = async (arguments_: string[]) => {
     return JSON.parse(output) as { ok?: boolean; available?: boolean; transcript?: string; engine?: string; mode?: string; reason?: string };
   } finally {
     if (timeout) clearTimeout(timeout);
+    activeTranscribers.delete(stop);
   }
 };
 
 async function startTranscriptionBridge() {
+  process.once("SIGTERM", () => process.exit(0));
+  process.once("SIGINT", () => process.exit(0));
   Bun.serve({
     hostname: "127.0.0.1",
     port: TRANSCRIPTION_PORT,
@@ -99,8 +107,14 @@ async function startTranscriptionBridge() {
 }
 
 async function main() {
+  if (isPackaged) {
+    await requireNativeServiceLease(join(executableDir, process.argv.includes("--transcription") ? "VidmarkServer" : "Vidmark"));
+  }
   if (process.argv.includes("--transcription")) return startTranscriptionBridge();
-  if (await appIsReady()) { openApp(); return; }
+  if (await appIsReady()) {
+    if (isPackaged) throw new Error("Another service is already using Vidmark's workspace port. Quit it before unlocking Vidmark.");
+    openApp(); return;
+  }
 
   const logDir = join(process.env.HOME ?? tmpdir(), "Library", "Logs", "Vidmark");
   const dataDirectory = process.env.VIDMARK_DATA_DIR || join(process.env.HOME ?? tmpdir(), "Library", "Application Support", "Vidmark");
@@ -110,7 +124,12 @@ async function main() {
   const noteStoragePath = join(process.env.HOME ?? tmpdir(), "Library", "Application Support", "Vidmark", "notes");
   await mkdir(logDir, { recursive: true });
 
-  const transcription = Bun.spawn([process.execPath, "--transcription"], { stdout: "inherit", stderr: "inherit" });
+  const transcription = Bun.spawn([process.execPath, "--transcription"], { stdin: "pipe", stdout: "inherit", stderr: "inherit" });
+  if (isPackaged) {
+    transcription.stdin.write(`${process.env.VIDMARK_SESSION_TOKEN}\n`);
+    transcription.stdin.flush();
+  }
+  process.once("exit", () => transcription.kill("SIGTERM"));
   const mcp = await startVidmarkMcpServer(databasePath, { systemPromptsPath });
   const provider = startModelProviderServer(providerSettingsPath, databasePath, systemPromptsPath);
   const noteStorage = startNoteStorageServer(noteStoragePath);
