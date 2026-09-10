@@ -17,6 +17,7 @@ import { createLocalCourse, getCourseQuestions, getLocalCourse, getLocalCourses,
 
 import { webUrl, youtubeId } from "./course-source";
 import { CourseChapters } from "./course-chapters";
+import { noteBelongsToCourse, retryLibraryLoad } from "./library-recovery";
 
 type Chapter = { title: string; start: number; duration: string; summary: string; tags: string[] };
 type Note = { time: number; title: string; text: string; chapter: string; image?: string; kind: "concept" | "lab" | "exam" };
@@ -113,6 +114,7 @@ export default function Home() {
   const [addCourseError, setAddCourseError] = useState("");
   const [addingCourse, setAddingCourse] = useState(false);
   const [libraryLoaded, setLibraryLoaded] = useState(false);
+  const [libraryError, setLibraryError] = useState("");
   const libraryInitialized = useRef(false);
   const [newPrompt, setNewPrompt] = useState("");
   const [newPromptCredit, setNewPromptCredit] = useState("");
@@ -171,19 +173,22 @@ export default function Home() {
       libraryInitialized.current = true;
     }
     setLibraryLoaded(true);
+    setLibraryError("");
     const byId = new Map(synced.map((video) => [video.id, video]));
     setLibrary([...bundledVideos.map((video) => byId.get(video.id) ?? video), ...synced.filter((video) => !bundledVideoIds.has(video.id))]);
   }, []);
 
   useEffect(() => {
     let active = true;
-    const databaseTimer = window.setTimeout(() => { void refreshLibraryFromDatabase(); }, 0);
+    const cancelLibraryLoad = retryLibraryLoad(refreshLibraryFromDatabase, () => {
+      setLibraryError("The local course database is unavailable. Retrying automatically; your saved courses have not been changed.");
+    });
     void getProfile().then((storedProfile) => {
       if (!active) return;
       setProfile(storedProfile);
       setProfileLoaded(true);
     }).catch(() => { if (active) setProfileLoaded(true); });
-    return () => { active = false; window.clearTimeout(databaseTimer); };
+    return () => { active = false; cancelLibraryLoad(); };
   }, [refreshLibraryFromDatabase]);
 
   useEffect(() => {
@@ -254,7 +259,7 @@ export default function Home() {
   const courseChapters = isStarter ? chapters.map((chapter, index) => ({ ...chapter, id: chapterSectionIds[index] })) : (activeVideo.chapters ?? []).map((chapter, index) => ({ id: String(chapter.id ?? `chapter-${index + 1}`), title: String(chapter.title ?? `Chapter ${index + 1}`), summary: String(chapter.summary ?? ""), start: Number(chapter.start ?? 0), duration: "", tags: [] as string[] }));
   const currentSection = isStarter ? courseChapters[activeChapterIndex] ?? courseChapters[0] : courseChapters.find((chapter) => chapter.id === readingChapterId) ?? courseChapters[0] ?? { id: "unsorted", title: "Course notes", summary: "", start: 0, duration: "", tags: [] };
   const currentChapterId = currentSection.id;
-  const courseNotes = savedNotes.filter((note) => note.courseId === activeVideoId);
+  const courseNotes = savedNotes.filter((note) => noteBelongsToCourse(note.courseId, activeVideo, library));
   const courseVoiceNotes = courseNotes.filter((note) => note.source === "voice");
   const noteGroups = courseChapters.map((chapter) => ({ chapter, notes: courseNotes.filter((note) => note.chapterId === chapter.id) })).filter((group) => group.notes.length);
   const unsortedNotes = courseNotes.filter((note) => note.chapterId === "unsorted");
@@ -418,6 +423,7 @@ export default function Home() {
 
   return (
     <main className="app-shell" data-theme={theme}>
+      {libraryError ? <div className="library-recovery-status" role="status">{libraryError}</div> : null}
       <aside className="rail">
         <div className="brand-mark" role="img" aria-label="Vidmark">V</div>
         <nav aria-label="Primary">

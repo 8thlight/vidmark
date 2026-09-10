@@ -16,7 +16,8 @@ button { color:inherit; }
 .rail-button:hover,.rail-button.active { background:#ffffff12; color:white; }
 .rail-button:hover .rail-icon { transform:translateY(-1px) scale(1.08); }
 .rail-button.active .rail-icon { transform:scale(1.04); }
-.rail-button[aria-label="Video library"]:hover .rail-icon { transform:translateY(-1px) rotate(-4deg) scale(1.08); }
+.rail-button[aria-label="Course library"]:hover .rail-icon { transform:translateY(-1px) rotate(-4deg) scale(1.08); }
+.library-recovery-status { position:fixed; bottom:24px; left:90px; right:24px; z-index:100; padding:16px; border:1px solid #f46a35; border-radius:12px; background:#101d30; color:#fff; }
 .rail-button[aria-label="Bookmarks"]:hover .rail-icon { transform:translateY(-1px) rotate(5deg) scale(1.08); }
 .rail-button[aria-label="Theme"]:hover .rail-icon { transform:rotate(20deg) scale(1.08); }
 .rail-button.active { box-shadow:inset 3px 0 var(--accent); border-radius:0 12px 12px 0; }

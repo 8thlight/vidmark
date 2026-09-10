@@ -222,7 +222,7 @@ const runBuild = async (job: BuildJob, settings: ProviderSettings, databasePath:
   }
 };
 
-export function startModelProviderServer(settingsPath: string, databasePath: string, systemPromptsPath = join(dirname(settingsPath), "system-prompts.json")) {
+export function startModelProviderServer(settingsPath: string, databasePath: string, systemPromptsPath = join(dirname(settingsPath), "system-prompts.json"), port = PROVIDER_PORT) {
   const corsHeaders = (request: Request) => {
     const origin = request.headers.get("origin");
     const allowed = origin === "http://127.0.0.1:3010" ? origin : "http://localhost:3010";
@@ -230,7 +230,7 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
   };
 
   const server = Bun.serve({
-    hostname: "127.0.0.1", port: PROVIDER_PORT, idleTimeout: 120,
+    hostname: "127.0.0.1", port, idleTimeout: 120,
     async fetch(request) {
       const url = new URL(request.url);
       const headers = corsHeaders(request);
@@ -284,6 +284,6 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
       }
     },
   });
-  console.log(`Vidmark model provider is listening at http://127.0.0.1:${PROVIDER_PORT}`);
+  console.log(`Vidmark model provider is listening at http://127.0.0.1:${server.port}`);
   return server;
 }

@@ -29,7 +29,8 @@ const fakeModel = Bun.serve({ hostname: "127.0.0.1", port: 33428, async fetch(re
   }
   return Response.json({ error: "Not found" }, { status: 404 });
 } });
-const provider = startModelProviderServer(join(root, "provider.json"), join(root, "alice.sqlite"), join(root, "system-prompts.json"));
+const provider = startModelProviderServer(join(root, "provider.json"), join(root, "alice.sqlite"), join(root, "system-prompts.json"), 0);
+const providerOrigin = `http://127.0.0.1:${provider.port}`;
 
 const request = async (method: string, params: Record<string, unknown> = {}) => {
   const response = await fetch(`${origin}/mcp`, {
@@ -86,12 +87,12 @@ try {
   const course = service.store.getCourse(courseId);
   if (!course?.studyGuide || course.chapters.length !== 1 || course.questions.length !== 1 || course.conceptGraph?.graphId !== "agent-workflow") throw new Error("The completed MCP build was not persisted as one complete SQLite course.");
 
-  const providerSettings = await fetch("http://127.0.0.1:31418/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: "local", baseUrl: "http://127.0.0.1:33428/v1", model: "vidmark-fake-agent" }) });
+  const providerSettings = await fetch(`${providerOrigin}/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: "local", baseUrl: "http://127.0.0.1:33428/v1", model: "vidmark-fake-agent" }) });
   if (!providerSettings.ok) throw new Error(`The in-app provider could not be configured: ${await providerSettings.text()}`);
-  const started = await (await fetch("http://127.0.0.1:31418/build", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ courseId }) })).json() as { id: string };
+  const started = await (await fetch(`${providerOrigin}/build`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ courseId }) })).json() as { id: string };
   let job: { status?: string; error?: string } = {};
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    job = await (await fetch(`http://127.0.0.1:31418/build/${started.id}`)).json() as typeof job;
+    job = await (await fetch(`${providerOrigin}/build/${started.id}`)).json() as typeof job;
     if (job.status === "complete" || job.status === "failed") break;
     await Bun.sleep(20);
   }
