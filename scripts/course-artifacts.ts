@@ -1,6 +1,8 @@
 import * as z from "zod";
+import { webUrl } from "../app/course-source";
 
 const text = z.string().trim().min(1);
+export const citationUrl = z.string().refine(value => Boolean(webUrl(value)), "Citations require HTTP(S) URLs without credentials.");
 const choice = z.enum(["A", "B", "C", "D"]);
 const option = z.object({ text, rationale: text });
 export const questionSchema = z.object({
@@ -11,7 +13,7 @@ export const questionSchema = z.object({
   options: z.object({ A: option, B: option, C: option, D: option }).strict(), correctAnswer: choice,
   grading: z.object({ temptingDistractor: choice, principle: text, missType: z.enum(["judgment", "recall"]), hinge: text }),
   videoReferences: z.array(z.object({ timestampSeconds: z.number().int().min(0), label: text, screenshot: z.string().optional() })).default([]),
-  sources: z.array(z.object({ label: text, url: z.url(), accessedAt: text })).default([]), tags: z.array(text).default([]),
+  sources: z.array(z.object({ label: text, url: citationUrl, accessedAt: text })).default([]), tags: z.array(text).default([]),
 });
 export function validateQuestion(input: unknown) {
   const question = questionSchema.parse(input);

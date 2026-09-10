@@ -67,7 +67,7 @@ function TaskStatus({ job, status }: { job: AgentJob | null; status: string }) {
 export function CourseAgentBuild({ courseId, built, children, onComplete }: { courseId: string; built: boolean; children?: ReactNode; onComplete: () => Promise<void> }) {
   const task = useAgentTask("build", new URLSearchParams({ courseId }).toString(), onComplete);
   return <section className="course-agent-build" aria-label="Course agent build">
-    <div className="course-agent-actions"><button type="button" disabled={task.busy || task.running} onClick={() => void task.start({ courseId })}>{task.running && <LoaderCircle className="spin" aria-hidden="true" />}{built ? "Update with agent" : "Build with agent"}</button>{children}{task.running && task.job?.harness !== "provider" && <button type="button" onClick={() => void task.cancel()} disabled={task.busy}>Cancel build</button>}</div>
+    <div className="course-agent-actions"><button type="button" disabled={task.busy || task.running} onClick={() => void task.start({ courseId })}>{task.running && <LoaderCircle className="spin" aria-hidden="true" />}{built ? "Update with agent" : "Build with agent"}</button>{children}{task.running && <button type="button" onClick={() => void task.cancel()} disabled={task.busy}>Cancel build</button>}</div>
     {built && <p>A new build may replace existing course content.</p>}
     <TaskStatus job={task.job} status={task.status} />
   </section>;

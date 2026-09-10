@@ -34,7 +34,16 @@ Before and after review, both questions retained revision 1 and the same content
 
 ## Automated checks and limits
 
-- 61 tests pass, including immutable reports for all three verdicts, stale-version rejection, untrusted origins, tool scope, cancellation, missing evidence, optional QA, provider preferences and model resolution.
+- Run `pnpm test` for the production build and regression suite, including immutable reports, stale-version rejection, tool scope, cancellation, missing evidence, optional QA, provider preferences and model resolution.
+
+### Review regressions
+
+- Scoped edits preserve archived questions and historical reviews; staged banks still commit atomically.
+- Both course-build runtimes require an exact question read and successfully retrieved evidence IDs before recording QA. An explicit inconclusive result can record missing evidence.
+- Research connections pin validated public IPs, revalidate redirects, preserve TLS verification, and enforce a 2 MiB response limit while streaming. Citations accept only credential-free HTTP(S) URLs.
+- In-app builds expose cancellation, propagate abort signals to model/research calls, and preserve a truthful saved status if optional QA fails afterward.
+- Fact-check completion refreshes exam QA metadata only for matching content hashes, leaving frozen questions and answers unchanged.
+- CLI discovery verifies every flag needed for isolated launches.
 - Workflow integration verification passes: SQLite artifacts, transcript retention, 46 full-library MCP tools, local coordinator and shared course import.
 - Production frontend build and native arm64 server compilation pass; changed-file lint and whitespace checks pass.
 - Whole-repo TypeScript checking still reports existing errors in the D1 example, worker platform types and the packaged-lifecycle stream test.

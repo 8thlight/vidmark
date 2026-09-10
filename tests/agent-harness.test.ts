@@ -2,7 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtemp, stat, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { authenticationState, cliEventState, cliSearchDirectories, courseCliArguments, discoverHarness, findCli, readAgentPreferences, resolveAgentModel, runCli, writeAgentPreferences } from "../scripts/agent-harness";
+import { authenticationState, cliEventState, cliSearchDirectories, courseCliArguments, discoverHarness, findCli, readAgentPreferences, requiredCliFlags, resolveAgentModel, runCli, writeAgentPreferences } from "../scripts/agent-harness";
 import { createCourseAgentSession } from "../scripts/course-agent-session";
 import { VidmarkDatabase, STARTER_COURSE_ID } from "../scripts/vidmark-db";
 import { DebugLog } from "../scripts/debug-log";
@@ -67,7 +67,7 @@ test("detection handles missing CLIs, old versions, failed login checks and mode
   expect((await discoverHarness("codex", dependencies)).status).toBe("not_installed");
   dependencies.findCli = async () => "/test/codex";
   expect((await discoverHarness("codex", dependencies)).status).toBe("unavailable");
-  dependencies.runCli = async () => ({ code: 0, stdout: "Logged in --ignore-user-config --json --ephemeral", stderr: "" });
+  dependencies.runCli = async () => ({ code: 0, stdout: "Logged in " + requiredCliFlags.codex.join(" "), stderr: "" });
   expect((await discoverHarness("codex", dependencies)).models[0]?.id).toBe("from-cli");
   dependencies.readCliModels = async () => { throw new Error("Catalog offline"); };
   expect(await discoverHarness("codex", dependencies)).toMatchObject({ status: "ready", modelError: "Catalog offline" });
@@ -85,6 +85,47 @@ test("launch arguments isolate config, never bypass permissions, and pass the se
     expect(() => courseCliArguments(id, "bad\n--flag", "http://127.0.0.1:1234/mcp/run")).toThrow();
     expect(() => courseCliArguments(id, "", "https://example.com/mcp")).toThrow();
   }
+});
+
+test("discovery rejects every missing flag required by either CLI launch contract", async () => {
+  for (const id of ["codex", "claude"] as const) {
+    for (const missing of requiredCliFlags[id]) {
+      const result = await discoverHarness(id, {
+        findCli: async () => "/test/cli",
+        runCli: async (_exe, args) => ({ code: 0, stdout: args.includes("--help") ? requiredCliFlags[id].filter(flag => flag !== missing).join(" ") : id === "codex" ? "Logged in" : '{"loggedIn":true}', stderr: "" }),
+        readCliModels: async () => [],
+      });
+      expect(result.status).toBe("unavailable");
+    }
+  }
+});
+
+test("scoped question edits preserve archived questions and review history; QA checks evidence", async () => {
+  const id = "archive-preservation";
+  makeCourse(id);
+  const session = createCourseAgentSession(db, id, {}, async () => ({ ok: true, content: "Primary evidence" }), () => {});
+  const call = (name: string, args: Record<string, unknown>) => rpc(session.url, "tools/call", { name, arguments: { courseId: id, ...args } });
+  try {
+    await call("set_course_build_requirements", { requirements: { questionCount: 1 } });
+    await call("save_course_build", artifacts);
+    const archived = db.upsertQuestion(id, { ...fixture, id: "archived", question: "Archived question?" })!;
+    db.reviewQuestion(id, archived.id, archived.revision, { reviewer: "Agent", outcome: "reviewed", notes: "Checked evidence", evidence: ["https://example.com"], contentHash: archived.contentHash }, "mcp");
+    db.archiveQuestion(id, archived.id);
+    const before = db.getQuestion(id, archived.id);
+    const history = db.getQuestionReviews(id, archived.id);
+    const current = db.getQuestion(id, "q1")!;
+    expect((await call("upsert_course_question", { question: { ...fixture, question: "Updated question?" }, expectedRevision: current.revision })).isError).not.toBe(true);
+    expect(db.getQuestion(id, archived.id)).toEqual(before);
+    expect(db.getQuestionReviews(id, archived.id)).toEqual(history);
+    const edited = db.getQuestion(id, "q1")!;
+    const input = { questionId: edited.id, expectedRevision: edited.revision, review: { reviewer: "Agent", outcome: "reviewed", notes: "Checked evidence", evidence: ["https://example.com"], contentHash: edited.contentHash } };
+    expect((await call("record_question_review", input)).isError).toBe(true);
+    await call("get_course_question", { questionId: "q1" });
+    expect((await call("record_question_review", input)).isError).toBe(true);
+    await call("fetch_url", { url: "https://example.com" });
+    expect((await call("record_question_review", input)).isError).not.toBe(true);
+    expect(db.getQuestion(id, "q1")?.qaReview?.outcome).toBe("reviewed");
+  } finally { session.close(); }
 });
 
 test("CLI process handles input, split JSON events, failure, cancellation and timeout", async () => {

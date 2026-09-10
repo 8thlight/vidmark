@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { VidmarkDatabase, STARTER_COURSE_ID } from "../scripts/vidmark-db";
-import { QuestionReviewMarker } from "../app/question-review";
+import { QuestionReviewMarker, mergeQuestionReviewState, type QuestionReview } from "../app/question-review";
+import { CourseReviewEvidence } from "../scripts/course-review-evidence";
 import { systemPromptDefinitions } from "../app/system-prompts";
 
 const dir = mkdtempSync(join(tmpdir(), "vidmark-quality-"));
@@ -71,4 +72,37 @@ test("instructions preserve identity, make QA optional, and contain no model cat
   expect(prompts).toContain("Preserve the subject");
   expect(prompts).toContain("caption");
   expect(prompts).not.toMatch(/(?:gpt-\d|qwen\d|claude-\d|sonnet|opus|haiku|terra|luna)/i);
+});
+
+test("build QA requires reading the exact saved version and retrieving its cited evidence", () => {
+  const ledger = new CourseReviewEvidence();
+  const saved = db.getQuestion("quality", "q1")!;
+  const input = { ...review, contentHash: saved.contentHash };
+  expect(() => ledger.validate(saved.id, saved.revision, input)).toThrow("Read this exact");
+  ledger.readQuestion(saved);
+  expect(() => ledger.validate(saved.id, saved.revision, input)).toThrow("successfully retrieved");
+  ledger.fetched(review.evidence[0], { ok: false, content: "Invented" });
+  ledger.fetched(review.evidence[0], { ok: true, content: "   " });
+  expect(() => ledger.validate(saved.id, saved.revision, input)).toThrow();
+  ledger.fetched(review.evidence[0], { ok: true, content: "Actual source" });
+  expect(ledger.validate(saved.id, saved.revision, input).outcome).toBe("reviewed");
+  expect(() => ledger.validate(saved.id, saved.revision + 1, input)).toThrow();
+  expect(() => ledger.validate(saved.id, saved.revision, { ...input, contentHash: "0".repeat(64) })).toThrow();
+  const noEvidence = { ...input, outcome: "inconclusive", evidence: ["No sufficient source evidence was retrieved."] };
+  expect(ledger.validate(saved.id, saved.revision, noEvidence).outcome).toBe("inconclusive");
+  expect(() => ledger.validate(saved.id, saved.revision, { ...noEvidence, outcome: "reviewed" })).toThrow();
+  const empty = ledger.transcript("quality", 0, 0);
+  expect(() => ledger.validate(saved.id, saved.revision, { ...input, evidence: [empty] })).toThrow();
+  const evidenceId = ledger.transcript("quality", 0, 2);
+  expect(ledger.validate(saved.id, saved.revision, { ...input, evidence: [evidenceId] }).outcome).toBe("reviewed");
+});
+
+test("exam QA refresh preserves frozen questions and ignores reviews for different content", () => {
+  const qaReview: QuestionReview = { ...review, outcome: "reviewed", contentHash: "hash", reviewedAt: 123, via: "mcp" };
+  const snapshot = [{ bankId: "q1", contentHash: "hash", question: "Frozen question", correct: "A", qaReview: null as QuestionReview | null }];
+  const latest = [{ ...snapshot[0], question: "Must not replace the exam", correct: "B", qaReview }];
+  const updated = mergeQuestionReviewState(snapshot, latest);
+  expect(updated[0]).toEqual({ ...snapshot[0], qaReview });
+  expect(snapshot[0].qaReview).toBeNull();
+  expect(mergeQuestionReviewState(snapshot, [{ ...latest[0], contentHash: "different" }])).toEqual(snapshot);
 });

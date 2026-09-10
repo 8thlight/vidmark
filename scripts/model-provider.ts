@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import * as z from "zod";
 import { questionSchema, chapterSchema, questionReviewSchema, buildRequirementsSchema, validateQuestion } from "./course-artifacts";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { lookup } from "node:dns/promises";
+import { safeFetchUrl } from "./research-fetch";
+import { CourseReviewEvidence } from "./course-review-evidence";
 import { dirname, join } from "node:path";
 import { composeCourseBuildPrompt } from "../app/course-prompts";
 import { getSystemPrompt, renderSystemPrompt } from "../app/system-prompts";
@@ -124,44 +125,12 @@ const localTools = [
   { type: "function", function: { name: "save_course_build", description: "Save schema-valid course artifacts; questions without QA remain unreviewed. Save course artifacts to Vidmark's SQLite database. chapters and questions must be non-empty arrays; conceptGraph must contain nodes and edges.", parameters: { type: "object", properties: { studyGuide: { type: "string" }, researchNotes: { type: "string" }, chapters: { type: "array", items: z.toJSONSchema(chapterSchema) }, questions: { type: "array", items: z.toJSONSchema(questionSchema) }, conceptGraph: { type: "object", properties: { schemaVersion: { type: "string" }, nodes: { type: "array", items: { type: "object" } }, edges: { type: "array", items: { type: "object" } } }, required: ["nodes", "edges"], additionalProperties: true } }, required: ["studyGuide", "researchNotes", "chapters", "questions", "conceptGraph"], additionalProperties: false } } },
 ];
 
-const isPrivateAddress = (address: string) => {
-  const normalized = address.toLowerCase();
-  if (normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb")) return true;
-  const ipv4 = normalized.startsWith("::ffff:") ? normalized.slice(7) : normalized;
-  const parts = ipv4.split(".").map(Number);
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) return false;
-  return parts[0] === 10 || parts[0] === 127 || parts[0] === 0 || (parts[0] === 169 && parts[1] === 254) || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) || (parts[0] === 192 && parts[1] === 168) || (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127);
-};
 
-const assertPublicResearchUrl = async (url: URL) => {
-  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("Only HTTP(S) documentation URLs can be fetched.");
-  if (url.username || url.password) throw new Error("Documentation URLs cannot contain credentials.");
-  if (url.hostname === "localhost" || url.hostname.endsWith(".local")) throw new Error("Documentation fetches cannot target local services.");
-  const addresses = await lookup(url.hostname, { all: true });
-  if (!addresses.length || addresses.some(({ address }) => isPrivateAddress(address))) throw new Error("Documentation fetches cannot target private or loopback networks.");
-};
-
-const safeFetchUrl = async (rawUrl: string) => {
-  let url = new URL(rawUrl);
-  let response: Response | null = null;
-  for (let redirect = 0; redirect < 4; redirect += 1) {
-    await assertPublicResearchUrl(url);
-    response = await fetch(url, { headers: { "User-Agent": "Vidmark/1.0 course research" }, redirect: "manual", signal: AbortSignal.timeout(20_000) });
-    if (response.status < 300 || response.status >= 400) break;
-    const location = response.headers.get("location");
-    if (!location) break;
-    url = new URL(location, url);
-  }
-  if (!response) throw new Error("Documentation fetch failed before a response was received.");
-  if (!response.ok) throw new Error(`Documentation fetch returned HTTP ${response.status}.`);
-  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-  if (contentType && !/text|json|xml|html/.test(contentType)) throw new Error("Documentation fetch returned an unsupported binary content type.");
-  return (await response.text()).replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 30_000);
-};
-
-const runBuild = async (job: BuildJob, settings: ProviderSettings, databasePath: string, systemPromptsPath: string, debug: DebugLog) => {
+export const runBuild = async (job: BuildJob, settings: ProviderSettings, databasePath: string, systemPromptsPath: string, debug: DebugLog, signal: AbortSignal, dependencies = { callModel, fetchResearch: (url: string, signal: AbortSignal) => researchFetchResult(url, value => safeFetchUrl(value, signal)) }) => {
   debug.record("build.started");
   const store = new VidmarkDatabase(databasePath);
+  const reviewEvidence = new CourseReviewEvidence();
+  let saved = false;
   try {
     const storedPrompts = await readSystemPromptOverrides(systemPromptsPath);
     const promptOverrides = storedPrompts.overrides;
@@ -175,13 +144,14 @@ const runBuild = async (job: BuildJob, settings: ProviderSettings, databasePath:
     const sourceEvidence: Array<{ url: string; ok: boolean; accessedAt: string; contentHash?: string }> = [];
     const sourceTexts: string[] = [];
     messages.unshift({ role: "system", content: `Current date: ${new Date().toISOString().slice(0, 10)}. ${artifactContract}` });
-    let saved = false;
 
     for (let turn = 0; turn < 40; turn += 1) {
+      signal.throwIfAborted();
       updateJob(job, `Agent turn ${turn + 1}`, "The coordinator is reading evidence or delegating specialist work.");
       const modelStarted = Date.now();
       debug.record("model.started", turn + 1);
-      const assistant = await callModel(settings, messages, tools, 8192);
+      const assistant = await dependencies.callModel(settings, messages, tools, 8192, "auto", signal);
+      signal.throwIfAborted();
       debug.record("model.finished", turn + 1, Date.now() - modelStarted);
       messages.push(assistant);
       const calls = assistant.tool_calls ?? [];
@@ -194,64 +164,82 @@ const runBuild = async (job: BuildJob, settings: ProviderSettings, databasePath:
       for (const call of calls) {
         const toolStarted = Date.now();
         debug.record("tool.started", turn + 1, undefined, call.function.name);
-        const args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
         let result: unknown;
-        if (call.function.name === "set_course_build_requirements") {
-          result = store.setBuildRequirements(String(course.id), buildRequirementsSchema.parse(args));
-        } else if (call.function.name === "get_course_question") {
-          result = store.getQuestion(String(course.id), String(args.questionId));
-        } else if (call.function.name === "upsert_course_question") {
-          result = store.upsertQuestion(String(course.id), validateQuestion(args.question), args.expectedRevision === undefined ? undefined : Number(args.expectedRevision));
-        } else if (call.function.name === "record_question_review") {
-          result = store.reviewQuestion(String(course.id), String(args.questionId), Number(args.expectedRevision), args.review, "local-model");
-        } else if (call.function.name === "get_course") {
-          result = { id: course.id, title: course.title, sourceUrl: course.sourceUrl, videoUrl: course.videoUrl, coursePrompt: course.coursePrompt, promptCredit: course.promptCredit, transcriptCues: course.transcript.length, buildRequirements: store.getBuildRequirements(String(course.id)), existing: { chapters: course.chapters?.length ?? 0, questions: course.questions?.length ?? 0, hasStudyGuide: Boolean(course.studyGuide) } };
-        } else if (call.function.name === "get_transcript") {
-          const offset = Math.max(0, Number(args.offset ?? 0));
-          const limit = Math.min(500, Math.max(1, Number(args.limit ?? 250)));
-          result = { offset, total: course.transcript.length, cues: course.transcript.slice(offset, offset + limit) };
-        } else if (call.function.name === "acquire_course_transcript") {
-          if (!course.videoUrl) { messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: "Non-video course: read sourceUrl with fetch_url instead. No transcript is required." }) }); continue; }
-          updateJob(job, "Acquiring transcript", "Retrieving the video's public timestamped YouTube captions.");
-          const acquired = await acquireYouTubeTranscript(String(course.videoUrl ?? course.videoId ?? course.id), String(args.preferredLanguage ?? "en"));
-          store.replaceTranscript(String(course.id), acquired.cues);
-          course.transcript = acquired.cues;
-          job.transcriptCues = acquired.cues.length;
-          result = { saved: true, cues: acquired.cues.length, videoId: acquired.videoId, language: acquired.language, trackName: acquired.trackName, automaticallyGenerated: acquired.automaticallyGenerated, sourceUrl: acquired.sourceUrl, acquiredAt: acquired.acquiredAt };
-        } else if (call.function.name === "fetch_url") {
-          updateJob(job, "Verifying source", String(args.url ?? "Authoritative documentation"));
-          const fetched = await researchFetchResult(String(args.url ?? ""), safeFetchUrl);
-          result = fetched;
-          let sourceUrl = "invalid-url";
-          try { const u = new URL(String(args.url)); sourceUrl = u.origin + u.pathname; } catch { /* No raw credentials or query strings. */ }
-          const evidence = { url: sourceUrl, ok: fetched.ok, accessedAt: new Date().toISOString(), ...(fetched.ok ? { contentHash: createHash("sha256").update(fetched.content).digest("hex") } : {}) };
-          sourceEvidence.push(evidence);
-          if (fetched.ok) sourceTexts.push(`SOURCE ${sourceUrl}:\n${fetched.content.slice(0, 15000)}`);
-          debug.outcome(job.id, "fetch_url", fetched.ok, evidence.contentHash);
-        } else if (call.function.name === "run_subagent") {
-          updateJob(job, `Specialist · ${String(args.role ?? "course work")}`, String(args.task ?? "Working in an isolated context."));
-          const specialist = await callModel(settings, [{ role: "system", content: renderSystemPrompt("specialist", promptOverrides, { role: String(args.role) }) + "\n" + artifactContract + `\nCourse identity: ${course.title}. Source: ${course.sourceUrl || course.videoUrl}. Current date: ${new Date().toISOString().slice(0, 10)}.` }, { role: "user", content: `${String(args.task)}\n\nContext:\n${String(args.context).slice(0, 40_000)}\n\nOriginal transcript (may include caption errors):\n${JSON.stringify(course.transcript).slice(0, 60000)}\n\nRetrieved primary evidence (not proof that a generated claim follows):\n${sourceTexts.join("\n").slice(0, 60000)}` }], settings.provider === "openrouter" && settings.enableWebSearch ? [{ type: "openrouter:web_search", max_total_results: 8, search_context_size: "high" }] : undefined, 8192);
-          result = specialist.content ?? "The specialist returned no text.";
-          debug.outcome(job.id, "run_subagent", Boolean(specialist.content), createHash("sha256").update(String(result)).digest("hex"));
-        } else if (call.function.name === "save_course_build") {
-          const chapters = Array.isArray(args.chapters) ? args.chapters : [];
-          const questions = Array.isArray(args.questions) ? args.questions : [];
-          const conceptGraph = args.conceptGraph && typeof args.conceptGraph === "object" && !Array.isArray(args.conceptGraph) ? args.conceptGraph : null;
-          if (!chapters.length || !questions.length) throw new Error("The agent tried to save an empty chapter or question collection.");
-          if (!conceptGraph) throw new Error("The agent tried to save a course without its concept graph.");
-          try {
-            result = store.saveCourseBuild(String(course.id), { studyGuide: String(args.studyGuide ?? ""), researchNotes: String(args.researchNotes ?? "") + "\n\nRetrieval manifest (fetch success is not factual QA):\n" + JSON.stringify(sourceEvidence, null, 2), chapters, questions, conceptGraph });
-          } catch (error) {
-            result = { saved: false, validationError: error instanceof Error ? error.message : "Invalid artifacts", guidance: "Nothing was saved. Correct the JSON to match the tool schema and recorded requirements; do not fabricate evidence." };
-            messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
-            debug.outcome(job.id, "save_course_build", false);
-            continue;
+        try {
+          signal.throwIfAborted();
+          const args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
+          if (call.function.name === "set_course_build_requirements") {
+            result = store.setBuildRequirements(String(course.id), buildRequirementsSchema.parse(args));
+          } else if (call.function.name === "get_course_question") {
+            result = reviewEvidence.readQuestion(store.getQuestion(String(course.id), String(args.questionId)));
+          } else if (call.function.name === "upsert_course_question") {
+            const question = validateQuestion(args.question);
+            const expectedRevision = args.expectedRevision === undefined ? undefined : z.number().int().min(1).parse(args.expectedRevision);
+            if (store.getQuestion(String(course.id), question.id) && expectedRevision === undefined) throw new Error("Read the existing question and supply expectedRevision before editing it.");
+            result = store.upsertQuestion(String(course.id), question, expectedRevision);
+          } else if (call.function.name === "record_question_review") {
+            const questionId = String(args.questionId);
+            const revision = z.number().int().min(1).parse(args.expectedRevision);
+            result = store.reviewQuestion(String(course.id), questionId, revision, reviewEvidence.validate(questionId, revision, args.review), "local-model");
+          } else if (call.function.name === "get_course") {
+            Object.assign(course, store.getCourse(job.courseId));
+            result = { id: course.id, title: course.title, sourceUrl: course.sourceUrl, videoUrl: course.videoUrl, coursePrompt: course.coursePrompt, promptCredit: course.promptCredit, transcriptCues: course.transcript.length, buildRequirements: store.getBuildRequirements(String(course.id)), existing: { chapters: course.chapters?.length ?? 0, questions: course.questions?.length ?? 0, hasStudyGuide: Boolean(course.studyGuide) } };
+          } else if (call.function.name === "get_transcript") {
+            const offset = Math.max(0, Number(args.offset ?? 0));
+            const limit = Math.min(500, Math.max(1, Number(args.limit ?? 250)));
+            const transcript = store.getCourse(job.courseId)?.transcript ?? [];
+            const cues = transcript.slice(offset, offset + limit);
+            result = { offset, total: transcript.length, cues, evidenceId: reviewEvidence.transcript(job.courseId, offset, cues.length) };
+          } else if (call.function.name === "acquire_course_transcript") {
+            if (!course.videoUrl) { messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: "Non-video course: read sourceUrl with fetch_url instead. No transcript is required." }) }); continue; }
+            updateJob(job, "Acquiring transcript", "Retrieving the video's public timestamped YouTube captions.");
+            const acquired = await acquireYouTubeTranscript(String(course.videoUrl ?? course.videoId ?? course.id), String(args.preferredLanguage ?? "en"), signal);
+            signal.throwIfAborted();
+            store.replaceTranscript(String(course.id), acquired.cues);
+            course.transcript = acquired.cues;
+            job.transcriptCues = acquired.cues.length;
+            result = { saved: true, cues: acquired.cues.length, videoId: acquired.videoId, language: acquired.language, trackName: acquired.trackName, automaticallyGenerated: acquired.automaticallyGenerated, sourceUrl: acquired.sourceUrl, acquiredAt: acquired.acquiredAt };
+          } else if (call.function.name === "fetch_url") {
+            updateJob(job, "Verifying source", String(args.url ?? "Authoritative documentation"));
+            const fetched = await dependencies.fetchResearch(String(args.url ?? ""), signal);
+            signal.throwIfAborted();
+            reviewEvidence.fetched(String(args.url ?? ""), fetched);
+            result = { ...fetched, evidenceId: String(args.url ?? "") };
+            let sourceUrl = "invalid-url";
+            try { const u = new URL(String(args.url)); sourceUrl = u.origin + u.pathname; } catch { /* No raw credentials or query strings. */ }
+            const evidence = { url: sourceUrl, ok: fetched.ok, accessedAt: new Date().toISOString(), ...(fetched.ok ? { contentHash: createHash("sha256").update(fetched.content).digest("hex") } : {}) };
+            sourceEvidence.push(evidence);
+            if (fetched.ok) sourceTexts.push(`SOURCE ${sourceUrl}:\n${fetched.content.slice(0, 15000)}`);
+            debug.outcome(job.id, "fetch_url", fetched.ok, evidence.contentHash);
+          } else if (call.function.name === "run_subagent") {
+            updateJob(job, `Specialist · ${String(args.role ?? "course work")}`, String(args.task ?? "Working in an isolated context."));
+            const specialist = await dependencies.callModel(settings, [{ role: "system", content: renderSystemPrompt("specialist", promptOverrides, { role: String(args.role) }) + "\n" + artifactContract + `\nCourse identity: ${course.title}. Source: ${course.sourceUrl || course.videoUrl}. Current date: ${new Date().toISOString().slice(0, 10)}.` }, { role: "user", content: `${String(args.task)}\n\nContext:\n${String(args.context).slice(0, 40_000)}\n\nOriginal transcript (may include caption errors):\n${JSON.stringify(course.transcript).slice(0, 60000)}\n\nRetrieved primary evidence (not proof that a generated claim follows):\n${sourceTexts.join("\n").slice(0, 60000)}` }], settings.provider === "openrouter" && settings.enableWebSearch ? [{ type: "openrouter:web_search", max_total_results: 8, search_context_size: "high" }] : undefined, 8192, "auto", signal);
+            signal.throwIfAborted();
+            result = specialist.content ?? "The specialist returned no text.";
+            debug.outcome(job.id, "run_subagent", Boolean(specialist.content), createHash("sha256").update(String(result)).digest("hex"));
+          } else if (call.function.name === "save_course_build") {
+            const chapters = Array.isArray(args.chapters) ? args.chapters : [];
+            const questions = Array.isArray(args.questions) ? args.questions : [];
+            const conceptGraph = args.conceptGraph && typeof args.conceptGraph === "object" && !Array.isArray(args.conceptGraph) ? args.conceptGraph : null;
+            if (!chapters.length || !questions.length) throw new Error("The agent tried to save an empty chapter or question collection.");
+            if (!conceptGraph) throw new Error("The agent tried to save a course without its concept graph.");
+            try {
+              result = store.saveCourseBuild(String(course.id), { studyGuide: String(args.studyGuide ?? ""), researchNotes: String(args.researchNotes ?? "") + "\n\nRetrieval manifest (fetch success is not factual QA):\n" + JSON.stringify(sourceEvidence, null, 2), chapters, questions, conceptGraph });
+            } catch (error) {
+              result = { saved: false, validationError: error instanceof Error ? error.message : "Invalid artifacts", guidance: "Nothing was saved. Correct the JSON to match the tool schema and recorded requirements; do not fabricate evidence." };
+              messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
+              debug.outcome(job.id, "save_course_build", false);
+              continue;
+            }
+            debug.outcome(job.id, "save_course_build", true);
+            saved = true;
+            result = { ...result as Record<string, unknown>, next: "Course saved. Optionally record_question_review for exact saved revisions, or return a final summary. Unreviewed questions remain marked with an asterisk." };
+          } else {
+            result = { error: `Unknown tool ${call.function.name}.` };
           }
-          debug.outcome(job.id, "save_course_build", true);
-          saved = true;
-          result = { ...result as Record<string, unknown>, next: "Course saved. Optionally record_question_review for exact saved revisions, or return a final summary. Unreviewed questions remain marked with an asterisk." };
-        } else {
-          result = { error: `Unknown tool ${call.function.name}.` };
+        } catch (error) {
+          if (signal.aborted) throw error;
+          result = { error: error instanceof Error ? error.message : "Tool failed. Correct the request and retry." };
         }
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
         debug.record("tool.finished", turn + 1, Date.now() - toolStarted, call.function.name);
@@ -262,9 +250,11 @@ const runBuild = async (job: BuildJob, settings: ProviderSettings, databasePath:
     debug.record("build.complete");
     Object.assign(job, { status: "complete" as const, phase: "Course saved", message: "Course artifacts saved. Questions without a recorded agent QA review are marked with an asterisk.", updatedAt: Date.now() });
   } catch (error) {
-    debug.record("build.failed");
+    debug.record(saved ? "build.complete" : "build.failed");
     const message = error instanceof Error ? error.message : "The course build failed.";
-    Object.assign(job, { status: "failed" as const, phase: "Build stopped", message, error: message, updatedAt: Date.now() });
+    Object.assign(job, saved
+      ? { status: "complete" as const, phase: "Course saved", message: "Course artifacts were saved before the agent stopped. Optional QA may be incomplete; unreviewed questions retain their asterisk.", updatedAt: Date.now() }
+      : { status: "failed" as const, phase: signal.aborted ? "Build cancelled" : "Build stopped", message, error: message, updatedAt: Date.now() });
   } finally {
     store.close();
   }
@@ -357,11 +347,12 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
           const job: BuildJob = { id: crypto.randomUUID(), courseId, harness: agent.harness, status: "queued", phase: "Queued", message: "Preparing the course coordinator.", startedAt: Date.now(), updatedAt: Date.now() };
           buildJobs.set(job.id, job);
           try { await writeAgentPreferences(agentSettingsPath, agent); } catch (error) { buildJobs.delete(job.id); throw error; }
-          if (agent.harness === "provider") void runBuild(job, settings, databasePath, systemPromptsPath, debug);
-          else {
-            const controller = new AbortController(); cancellations.set(job.id, controller);
-            void runCliCourseBuild(job, agent, databasePath, systemPromptsPath, debug, controller.signal, url => researchFetchResult(url, safeFetchUrl)).finally(() => cancellations.delete(job.id));
-          }
+          const controller = new AbortController(); cancellations.set(job.id, controller);
+          const timeout = setTimeout(() => controller.abort(), 45 * 60_000);
+          const pending = agent.harness === "provider"
+            ? runBuild(job, settings, databasePath, systemPromptsPath, debug, controller.signal)
+            : runCliCourseBuild(job, agent, databasePath, systemPromptsPath, debug, controller.signal, url => researchFetchResult(url, value => safeFetchUrl(value, controller.signal)));
+          void pending.finally(() => { clearTimeout(timeout); cancellations.delete(job.id); });
           return Response.json(job, { status: 202, headers });
         }
         if (request.method === "GET" && url.pathname === "/build") {
@@ -371,7 +362,7 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
         if (request.method === "POST" && /^\/build\/[^/]+\/cancel$/.test(url.pathname)) {
           const id = url.pathname.split("/")[2];
           const controller = cancellations.get(id);
-          if (!controller) throw new Error("No cancellable CLI build was found.");
+          if (!controller) throw new Error("No running build was found.");
           controller.abort();
           return Response.json({ ok: true }, { headers });
         }
@@ -399,7 +390,7 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
           factChecks.set(job.id, job);
           const controller = new AbortController(); cancellations.set(job.id, controller);
           const timeout = setTimeout(() => controller.abort(), 15 * 60_000);
-          void runQuestionFactCheck(job, agent, databasePath, systemPromptsPath, debug, controller.signal, url => researchFetchResult(url, safeFetchUrl), { model: settings.model, call: (messages, tools, signal) => callModel(settings, messages, tools, 4096, "required", signal) }).finally(() => { clearTimeout(timeout); cancellations.delete(job.id); });
+          void runQuestionFactCheck(job, agent, databasePath, systemPromptsPath, debug, controller.signal, url => researchFetchResult(url, value => safeFetchUrl(value, controller.signal)), { model: settings.model, call: (messages, tools, signal) => callModel(settings, messages, tools, 4096, "required", signal) }).finally(() => { clearTimeout(timeout); cancellations.delete(job.id); });
           return Response.json(job, { status: 202, headers });
         }
         if (request.method === "GET" && url.pathname === "/fact-check") {

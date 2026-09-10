@@ -6,7 +6,8 @@ import { QuestionFactCheck } from "./agent-task";
 import { type ExamQuestion } from "./exam-data";
 import bundledConceptGraph from "../data/concept-graph.json";
 import type { ConceptGraph } from "./concept-graph-types";
-import { getCourseConceptGraph } from "./vidmark-client";
+import { getCourseConceptGraph, getCourseQuestions } from "./vidmark-client";
+import { mergeQuestionReviewState } from "./question-review";
 import {
   ActiveExam,
   buildAttempt,
@@ -217,7 +218,10 @@ export function ExamMode({ questionBank, courseId, courseName = "Course practice
                 return <button key={choice} type="button" className={`${response?.selected === choice ? "selected" : ""} ${activeStudyAid === "all" ? "answer-explained" : ""} ${showCorrect ? "answer-correct" : ""} ${showTempting ? "answer-tempting" : ""}`} onClick={() => selectChoice(choice)}><i>{response?.selected === choice ? <Check aria-hidden="true" /> : null}</i><b>{choice}</b><span>{text}{activeStudyAid === "all" && <small className="exam-option-rationale"><em>{showCorrect ? "Correct" : showTempting ? "Tempting, but not best" : "Not the best answer"}</em>{activeQuestion.rationales[choice]}</small>}</span></button>;
               })}
             </div>
-            <QuestionFactCheck key={`${courseId}:${activeQuestion.bankId}:${activeQuestion.contentHash}`} courseId={courseId} questionId={activeQuestion.bankId} contentHash={activeQuestion.contentHash ?? ""} review={activeQuestion.qaReview} />
+            <QuestionFactCheck key={`${courseId}:${activeQuestion.bankId}:${activeQuestion.contentHash}`} courseId={courseId} questionId={activeQuestion.bankId} contentHash={activeQuestion.contentHash ?? ""} review={activeQuestion.qaReview} onComplete={async () => {
+              const latest = await getCourseQuestions(courseId, questionBank);
+              setExam(current => current ? { ...current, questionSnapshot: mergeQuestionReviewState(current.questionSnapshot ?? examQuestionsFromIds(current.questionIds, questionBank), latest) } : current);
+            }} />
             <footer className="exam-question-controls">
               <button type="button" onClick={() => goTo(exam.currentIndex - 1)} disabled={exam.currentIndex === 0}><ChevronLeft aria-hidden="true" /> Back</button>
               <button type="button" className={exam.flaggedIds.includes(activeQuestion.id) ? "flagged" : ""} onClick={toggleFlag}><Flag aria-hidden="true" />{exam.flaggedIds.includes(activeQuestion.id) ? "Flagged" : "Flag for review"}</button>

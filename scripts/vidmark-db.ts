@@ -415,7 +415,7 @@ export class VidmarkDatabase {
     return row ? parseJson(row.payload_json, {}) : {};
   }
 
-  saveCourseBuild(courseId: string, input: { studyGuide?: string; researchNotes?: string; chapters?: unknown[]; questions?: unknown[]; conceptGraph?: unknown }) {
+  saveCourseBuild(courseId: string, input: { studyGuide?: string; researchNotes?: string; chapters?: unknown[]; questions?: unknown[]; conceptGraph?: unknown }, singleQuestionUpdate?: { id: string; expectedRevision: number }) {
     return this.db.transaction(() => {
       const course = this.getCourse(courseId);
       if (!course) throw new Error("Course not found.");
@@ -443,7 +443,14 @@ export class VidmarkDatabase {
       }
       this.upsertCourse({ id: courseId, title: String(course.title), studyGuide: input.studyGuide, researchNotes: input.researchNotes });
       if (chapters) this.replaceChapters(courseId, chapters);
-      if (questions) this.replaceQuestions(courseId, questions);
+      if (questions) {
+        if (singleQuestionUpdate) {
+          const question = questions.find(q => q.id === singleQuestionUpdate.id);
+          const current = this.getQuestion(courseId, singleQuestionUpdate.id);
+          if (!question || !current || current.archived || current.revision !== singleQuestionUpdate.expectedRevision) throw new Error("Question revision conflict. Read the latest question first.");
+          this.upsertQuestion(courseId, question, singleQuestionUpdate.expectedRevision);
+        } else this.replaceQuestions(courseId, questions);
+      }
       if (graph) this.saveConceptGraph(courseId, graph);
       return { saved: courseId, chapters: chapters?.length, questions: questions?.length, revision: this.getCourse(courseId)?.revision, unreviewed: this.listQuestions(courseId, { limit: 1000 }).questions.filter(q => q.qaReview?.outcome !== "reviewed").length };
     })();

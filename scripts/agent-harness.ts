@@ -189,6 +189,10 @@ export function authenticationState(id: CliHarness, result: CommandResult): Harn
   return "unavailable";
 }
 
+export const requiredCliFlags = {
+  codex: ["--ignore-user-config", "--skip-git-repo-check", "--ephemeral", "--json", "--color", "--sandbox", "--config", "--model"],
+  claude: ["--print", "--output-format", "--verbose", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "--settings", "--mcp-config", "--tools", "--allowedTools", "--permission-mode", "--max-turns", "--model"],
+};
 export async function discoverHarness(id: CliHarness, dependencies = { findCli, runCli, readCliModels }): Promise<HarnessStatus> {
   const label = id === "codex" ? "Codex CLI" : "Claude Code CLI";
   const executable = await dependencies.findCli(id);
@@ -199,7 +203,7 @@ export async function discoverHarness(id: CliHarness, dependencies = { findCli, 
     const status = authenticationState(id, auth);
     if (status !== "ready") return { ...base, status, detail: status === "signed_out" ? `Sign in from Terminal with ${id === "codex" ? "codex login" : "claude auth login"}, then refresh.` : "Login could not be verified. Check the CLI in Terminal or update it, then refresh." };
     const help = await dependencies.runCli(executable, id === "codex" ? ["exec", "--help"] : ["--help"]);
-    const required = id === "codex" ? ["--ignore-user-config", "--json", "--ephemeral"] : ["--strict-mcp-config", "--setting-sources", "--tools", "--no-session-persistence", "--permission-mode"];
+    const required = requiredCliFlags[id];
     if (help.code !== 0 || required.some(flag => !help.stdout.includes(flag))) return { ...base, status: "unavailable", detail: "Signed in, but this CLI needs an update for isolated course builds." };
     try {
       const models = await dependencies.readCliModels(id, executable);

@@ -33,4 +33,7 @@ test("a broken research link returns an evidence gap and permits another source"
   const next = await researchFetchResult("https://example.com/valid", async () => "Verified text");
   expect(next.ok).toBe(true);
   expect(next.content).toBe("Verified text");
+  const blank = await researchFetchResult("https://example.com/blank", async () => " \n\t");
+  expect(blank.ok).toBe(false);
+  expect(blank).not.toHaveProperty("content");
 });
