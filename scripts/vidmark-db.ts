@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { chapterVideos, webUrl, youtubeId } from "../app/course-source";
 import bundledConceptGraph from "../data/concept-graph.json";
 import questionBank from "../data/question-bank.json";
 import { validateConceptGraph, type ConceptGraph } from "../app/concept-graph-types";
@@ -104,6 +105,7 @@ type CourseInput = {
   title: string;
   source?: string;
   videoUrl?: string;
+  sourceUrl?: string;
   originPrompt?: string;
   promptCredit?: string;
   transcript?: Array<{ time: number; text: string }>;
@@ -117,16 +119,7 @@ type CourseInput = {
 
 const now = () => Date.now();
 const json = (value: unknown) => JSON.stringify(value ?? null);
-export const youtubeVideoId = (value: string) => {
-  const trimmed = value.trim();
-  if (/^[A-Za-z0-9_-]{11}$/.test(trimmed)) return trimmed;
-  try {
-    const url = new URL(trimmed);
-    if (url.hostname === "youtu.be") return url.pathname.split("/").filter(Boolean)[0] ?? "";
-    if (url.hostname.endsWith("youtube.com")) return url.searchParams.get("v") ?? url.pathname.match(/\/(?:embed|shorts|live)\/([^/?]+)/)?.[1] ?? "";
-  } catch { /* The value may be a local course ID. */ }
-  return "";
-};
+export const youtubeVideoId = youtubeId;
 const parseJson = <T>(value: unknown, fallback: T): T => {
   try { return typeof value === "string" ? JSON.parse(value) as T : fallback; }
   catch { return fallback; }
@@ -316,6 +309,7 @@ export class VidmarkDatabase {
     try { this.db.exec("ALTER TABLE devices ADD COLUMN signing_public_key TEXT"); } catch { /* Already migrated. */ }
     try { this.db.exec("ALTER TABLE devices ADD COLUMN signing_private_key TEXT"); } catch { /* Already migrated. */ }
     try { this.db.exec("ALTER TABLE courses ADD COLUMN video_id TEXT NOT NULL DEFAULT ''"); } catch { /* Already migrated. */ }
+    try { this.db.exec("ALTER TABLE courses ADD COLUMN source_url TEXT NOT NULL DEFAULT ''"); } catch { /* Already migrated. */ }
     try { this.db.exec("ALTER TABLE courses ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'"); } catch { /* Already migrated. */ }
     try { this.db.exec("ALTER TABLE courses ADD COLUMN global_version INTEGER"); } catch { /* Already migrated. */ }
     try { this.db.exec("ALTER TABLE courses ADD COLUMN global_owner_device_id TEXT"); } catch { /* Already migrated. */ }
@@ -394,18 +388,27 @@ export class VidmarkDatabase {
   }
 
   upsertCourse(input: CourseInput & { active?: boolean }) {
+    return this.db.transaction(() => this.writeCourse(input))();
+  }
+
+  private writeCourse(input: CourseInput & { active?: boolean }) {
     const existing = this.db.query("SELECT * FROM courses WHERE id = ?").get(input.id) as Record<string, unknown> | null;
     const timestamp = now();
     const videoUrl = input.videoUrl ?? String(existing?.video_url ?? "");
+    const sourceUrl = input.sourceUrl ?? String(existing?.source_url || videoUrl);
+    if (sourceUrl && !webUrl(sourceUrl)) throw new Error("Course source URL must use HTTP(S).");
+    if (videoUrl && !webUrl(videoUrl)) throw new Error("Course video URL must use HTTP(S).");
     const videoId = youtubeVideoId(videoUrl) || String(existing?.video_id ?? input.id);
     const nextValues = [input.title, input.source ?? String(existing?.source ?? "YouTube"), videoUrl, input.originPrompt ?? String(existing?.origin_prompt ?? ""), input.promptCredit ?? String(existing?.prompt_credit ?? ""), input.studyGuide ?? existing?.study_guide ?? null, input.researchNotes ?? existing?.research_notes ?? null];
     const previousValues = existing ? [existing.title, existing.source, existing.video_url, existing.origin_prompt, existing.prompt_credit, existing.study_guide, existing.research_notes] : [];
-    if (existing && nextValues.some((value, index) => value !== previousValues[index])) this.prepareCourseMutation(input.id);
+    if (existing && (sourceUrl !== String(existing.source_url || existing.video_url || "") || nextValues.some((value, index) => value !== previousValues[index]))) this.prepareCourseMutation(input.id);
+    if (input.active) this.db.query("UPDATE courses SET active=0 WHERE id<>?").run(input.id);
     this.db.query(`INSERT INTO courses(id,title,source,video_url,origin_prompt,prompt_credit,study_guide,research_notes,active,revision,created_at,updated_at,video_id)
       VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,source=excluded.source,video_url=excluded.video_url,
       origin_prompt=excluded.origin_prompt,prompt_credit=excluded.prompt_credit,study_guide=COALESCE(excluded.study_guide,courses.study_guide),
       research_notes=COALESCE(excluded.research_notes,courses.research_notes),active=excluded.active,video_id=excluded.video_id,revision=courses.revision+1,updated_at=excluded.updated_at`)
-      .run(input.id, input.title, String(nextValues[1] ?? "YouTube"), videoUrl, String(nextValues[3] ?? ""), String(nextValues[4] ?? ""), input.studyGuide ?? null, input.researchNotes ?? null, input.active ? 1 : 0, Number(existing?.created_at ?? timestamp), timestamp, videoId);
+      .run(input.id, input.title, String(nextValues[1] ?? "YouTube"), videoUrl, String(nextValues[3] ?? ""), String(nextValues[4] ?? ""), input.studyGuide ?? null, input.researchNotes ?? null, (input.active ?? Boolean(existing?.active)) ? 1 : 0, Number(existing?.created_at ?? timestamp), timestamp, videoId);
+    this.db.query("UPDATE courses SET source_url=? WHERE id=?").run(sourceUrl, input.id);
     if (input.transcript) this.replaceTranscript(input.id, input.transcript);
     if (input.chapters) this.replaceChapters(input.id, input.chapters);
     if (input.questions) this.replaceQuestions(input.id, input.questions);
@@ -418,14 +421,14 @@ export class VidmarkDatabase {
       (SELECT COUNT(*) FROM chapters ch WHERE ch.course_id=c.id) chapter_count,
       (SELECT COUNT(*) FROM questions q WHERE q.course_id=c.id AND q.archived=0) question_count,
       (SELECT revision FROM concept_graphs cg WHERE cg.course_id=c.id) concept_graph_revision FROM courses c ORDER BY active DESC, updated_at DESC`).all() as Array<Record<string, unknown>>)
-      .map((row) => ({ id: row.id, videoId: row.video_id || row.id, title: row.title, source: row.source, videoUrl: row.video_url, promptCredit: row.prompt_credit, promptExcerpt: String(row.origin_prompt).slice(0, 240), transcriptCues: row.transcript_count, chapters: row.chapter_count, questions: row.question_count, conceptGraphRevision: row.concept_graph_revision ?? null, active: Boolean(row.active), revision: row.revision, visibility: row.visibility, globalVersion: row.global_version, globalOwnerDeviceId: row.global_owner_device_id, forkedFromVersion: row.forked_from_version, globalLocked: Boolean(row.global_locked), updatedAt: row.updated_at }));
+      .map((row) => ({ id: row.id, videoId: row.video_id || row.id, title: row.title, source: row.source, sourceUrl: row.source_url || row.video_url, videoUrl: row.video_url, promptCredit: row.prompt_credit, promptExcerpt: String(row.origin_prompt).slice(0, 240), transcriptCues: row.transcript_count, chapters: row.chapter_count, questions: row.question_count, conceptGraphRevision: row.concept_graph_revision ?? null, active: Boolean(row.active), revision: row.revision, visibility: row.visibility, globalVersion: row.global_version, globalOwnerDeviceId: row.global_owner_device_id, forkedFromVersion: row.forked_from_version, globalLocked: Boolean(row.global_locked), updatedAt: row.updated_at }));
   }
 
   getCourse(courseId: string) {
     const row = this.db.query("SELECT * FROM courses WHERE id = ?").get(courseId) as Record<string, unknown> | null;
     if (!row) return null;
     const conceptGraph = this.getConceptGraph(courseId);
-    return { id: row.id, videoId: row.video_id || row.id, title: row.title, source: row.source, videoUrl: row.video_url, coursePrompt: row.origin_prompt, promptCredit: row.prompt_credit, studyGuide: row.study_guide, researchNotes: row.research_notes, conceptGraph: conceptGraph?.graph ?? null, conceptGraphRevision: conceptGraph?.revision ?? null, active: Boolean(row.active), revision: row.revision, visibility: row.visibility, globalVersion: row.global_version, globalOwnerDeviceId: row.global_owner_device_id, forkedFromVersion: row.forked_from_version, globalLocked: Boolean(row.global_locked), updatedAt: row.updated_at, transcript: this.getTranscript(courseId, undefined, 100000).cues, chapters: this.listChapters(courseId), questions: this.listQuestions(courseId, { includeArchived: true, limit: 10000 }).questions };
+    return { id: row.id, videoId: row.video_id || row.id, title: row.title, source: row.source, sourceUrl: row.source_url || row.video_url, videoUrl: row.video_url, coursePrompt: row.origin_prompt, promptCredit: row.prompt_credit, studyGuide: row.study_guide, researchNotes: row.research_notes, conceptGraph: conceptGraph?.graph ?? null, conceptGraphRevision: conceptGraph?.revision ?? null, active: Boolean(row.active), revision: row.revision, visibility: row.visibility, globalVersion: row.global_version, globalOwnerDeviceId: row.global_owner_device_id, forkedFromVersion: row.forked_from_version, globalLocked: Boolean(row.global_locked), updatedAt: row.updated_at, transcript: this.getTranscript(courseId, undefined, 100000).cues, chapters: this.listChapters(courseId), questions: this.listQuestions(courseId, { includeArchived: true, limit: 10000 }).questions };
   }
 
   getConceptGraph(courseId: string): ConceptGraphRecord | null {
@@ -472,12 +475,17 @@ export class VidmarkDatabase {
   }
 
   replaceChapters(courseId: string, chapters: unknown[]) {
+    const normalized = chapters.map((chapter) => {
+      if (!chapter || typeof chapter !== "object" || Array.isArray(chapter)) throw new Error("Each chapter must be an object.");
+      const value = chapter as Record<string, unknown>;
+      return { ...value, videos: chapterVideos(value.videos) };
+    });
     this.prepareCourseMutation(courseId);
     const timestamp = now();
     this.db.transaction(() => {
       this.db.query("DELETE FROM chapters WHERE course_id=?").run(courseId);
       const insert = this.db.query("INSERT INTO chapters(course_id,id,position,payload_json,created_at,updated_at) VALUES (?,?,?,?,?,?)");
-      chapters.forEach((chapter, index) => {
+      normalized.forEach((chapter, index) => {
         const value = chapter && typeof chapter === "object" ? chapter as Record<string, unknown> : { value: chapter };
         insert.run(courseId, String(value.id ?? `chapter-${index + 1}`), index, json(value), timestamp, timestamp);
       });
@@ -485,7 +493,7 @@ export class VidmarkDatabase {
     })();
   }
 
-  listChapters(courseId: string) {
+  listChapters(courseId: string): Array<Record<string, unknown>> {
     return (this.db.query("SELECT id,position,payload_json,revision,updated_at FROM chapters WHERE course_id=? ORDER BY position").all(courseId) as Array<Record<string, unknown>>)
       .map((row) => ({ ...parseJson<Record<string, unknown>>(row.payload_json, {}), id: row.id, position: row.position, revision: row.revision, updatedAt: row.updated_at }));
   }
@@ -626,11 +634,15 @@ export class VidmarkDatabase {
   }
 
   importCourseBundle(bundle: Record<string, unknown>, options: { visibility?: "private" | "public"; globalVersion?: number; globalOwnerDeviceId?: string; globalLocked?: boolean } = {}) {
+    return this.db.transaction(() => this.writeCourseBundle(bundle, options))();
+  }
+
+  private writeCourseBundle(bundle: Record<string, unknown>, options: { visibility?: "private" | "public"; globalVersion?: number; globalOwnerDeviceId?: string; globalLocked?: boolean }) {
     const course = bundle.course && typeof bundle.course === "object" ? bundle.course as Record<string, unknown> : bundle;
     const id = String(course.id ?? course.videoId ?? "").trim();
     if (!id) throw new Error("The shared course does not contain an ID.");
     const questions = Array.isArray(course.questions) ? course.questions.map((question) => question && typeof question === "object" && "payload" in question ? (question as { payload: unknown }).payload : question) : [];
-    const saved = this.upsertCourse({ id, title: String(course.title ?? `YouTube course · ${id}`), source: String(course.source ?? "YouTube"), videoUrl: String(course.videoUrl ?? `https://www.youtube.com/watch?v=${course.videoId ?? id}`), originPrompt: String(course.coursePrompt ?? course.originPrompt ?? "Build a well-researched course from this video."), promptCredit: String(course.promptCredit ?? "Course creator"), studyGuide: course.studyGuide === undefined ? undefined : String(course.studyGuide ?? ""), researchNotes: course.researchNotes === undefined ? undefined : String(course.researchNotes ?? ""), active: true });
+    const saved = this.upsertCourse({ id, title: String(course.title ?? `Course · ${id}`), source: String(course.source ?? "YouTube"), sourceUrl: String(course.sourceUrl ?? course.videoUrl ?? ""), videoUrl: String(course.videoUrl ?? (!course.sourceUrl && youtubeId(String(course.videoId ?? id)) ? `https://www.youtube.com/watch?v=${course.videoId ?? id}` : "")), originPrompt: String(course.coursePrompt ?? course.originPrompt ?? "Build a well-researched course from this video."), promptCredit: String(course.promptCredit ?? "Course creator"), studyGuide: course.studyGuide === undefined ? undefined : String(course.studyGuide ?? ""), researchNotes: course.researchNotes === undefined ? undefined : String(course.researchNotes ?? ""), active: true });
     if (Array.isArray(course.transcript)) this.replaceTranscript(id, course.transcript as Array<{ time: number; text: string }>);
     if (Array.isArray(course.chapters)) this.replaceChapters(id, course.chapters);
     if (questions.length) this.replaceQuestions(id, questions);

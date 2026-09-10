@@ -2,7 +2,7 @@
 // Regenerate after changing the bank. Every option carries a rationale so the
 // practice panel's "Help me" mode can reveal all four explanations at once.
 
-export type DomainId = "architecture" | "tools" | "code" | "prompting" | "context";
+export type DomainId = string;
 export type Choice = "A" | "B" | "C" | "D";
 
 export type ExamQuestion = {
@@ -11,6 +11,7 @@ export type ExamQuestion = {
   chapter: string;
   sectionId: string;
   domain: DomainId;
+  domainLabel?: string;
   difficulty: "foundational" | "standard" | "advanced";
   mode: "standard" | "hard";
   scenario: string;

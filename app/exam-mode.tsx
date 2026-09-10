@@ -2,7 +2,7 @@
 
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { BarChart3, Check, ChevronLeft, ChevronRight, CirclePause, CirclePlay, Clock3, Eye, Flag, ListChecks, Network, RotateCcw, TimerReset, Trophy } from "lucide-react";
-import { domains, type ExamQuestion } from "./exam-data";
+import { type ExamQuestion } from "./exam-data";
 import bundledConceptGraph from "../data/concept-graph.json";
 import type { ConceptGraph } from "./concept-graph-types";
 import { getCourseConceptGraph } from "./vidmark-client";
@@ -11,7 +11,7 @@ import {
   buildAttempt,
   createExamQuestionIds,
   DEFAULT_EXAM_COURSE_ID,
-  DEFAULT_EXAM_COURSE_NAME,
+  courseDomains,
   EXAM_DURATION_SECONDS,
   ExamAttempt,
   ExamChoice,
@@ -39,10 +39,11 @@ const formatDuration = (seconds: number) => {
   return `${minutes}m ${String(remainder).padStart(2, "0")}s`;
 };
 
-const domainOrder = ["architecture", "tools", "code", "prompting", "context"] as const;
 const attemptColors = ["#ff624b", "#4b86ca", "#2d9c98", "#e4a229", "#9878cf"];
 
-export function ExamMode({ questionBank, courseId }: { questionBank: ExamQuestion[]; courseId: string }) {
+export function ExamMode({ questionBank, courseId, courseName = "Course practice exam" }: { questionBank: ExamQuestion[]; courseId: string; courseName?: string }) {
+  const isCca = courseId === DEFAULT_EXAM_COURSE_ID;
+  const timedExamAvailable = questionBank.length > 0;
   const [tab, setTab] = useState<ExamTab>("session");
   const [exam, setExam] = useState<ActiveExam | null>(null);
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
@@ -65,51 +66,58 @@ export function ExamMode({ questionBank, courseId }: { questionBank: ExamQuestio
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      const stored = readActiveExam();
+      const stored = readActiveExam(courseId);
       if (stored && !stored.paused) {
         const elapsed = Math.max(0, Math.floor((Date.now() - Date.parse(stored.lastTickAt ?? stored.startedAt)) / 1000));
         stored.remainingSeconds = Math.max(0, stored.remainingSeconds - elapsed);
         stored.lastTickAt = new Date().toISOString();
       }
       setExam(stored);
-      setAttempts(readExamAttempts());
+      setAttempts(readExamAttempts(courseId));
       setHydrated(true);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [courseId]);
 
   useEffect(() => {
-    if (hydrated) saveActiveExam(exam);
-  }, [exam, hydrated]);
+    if (hydrated && timedExamAvailable) saveActiveExam(exam, courseId);
+  }, [exam, hydrated, timedExamAvailable, courseId]);
 
   const activeExamId = exam?.id;
   const examPaused = exam?.paused;
   useEffect(() => {
-    if (!activeExamId || examPaused) return;
+    if (!timedExamAvailable || !activeExamId || examPaused) return;
     const interval = window.setInterval(() => {
       setExam((current) => current ? { ...current, remainingSeconds: Math.max(0, current.remainingSeconds - 1), lastTickAt: new Date().toISOString() } : null);
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [activeExamId, examPaused]);
+  }, [activeExamId, examPaused, timedExamAvailable]);
 
   const questionIds = exam?.questionIds;
-  const questions = useMemo(() => questionIds ? examQuestionsFromIds(questionIds, questionBank) : [], [questionBank, questionIds]);
+  const questions = useMemo(() => exam?.questionSnapshot ?? (questionIds ? examQuestionsFromIds(questionIds, questionBank) : []), [questionBank, questionIds, exam?.questionSnapshot]);
+  const domains = courseDomains(courseId, exam?.questionSnapshot ?? questionBank);
+  const domainOrder = Object.keys(domains);
   const activeQuestion = exam ? questions[exam.currentIndex] : null;
   const response = activeQuestion ? exam?.responses.find((item) => item.questionId === activeQuestion.id) : null;
   const answeredCount = exam?.responses.length ?? 0;
   const activeStudyAid = activeQuestion ? studyAids[activeQuestion.id] : undefined;
 
   const startExam = () => {
+    if (!timedExamAvailable || !questionBank.length) return;
     const now = Date.now();
+    const questionIds = createExamQuestionIds(now, questionBank, courseId);
+    const durationSeconds = isCca ? EXAM_DURATION_SECONDS : questionIds.length * 120;
     setExam({
       id: `exam-${now}`,
-      courseId: DEFAULT_EXAM_COURSE_ID,
-      courseName: DEFAULT_EXAM_COURSE_NAME,
-      questionIds: createExamQuestionIds(now, questionBank),
+      courseId,
+      courseName,
+      questionIds,
+      questionSnapshot: examQuestionsFromIds(questionIds, questionBank),
+      durationSeconds,
       currentIndex: 0,
       responses: [],
       flaggedIds: [],
-      remainingSeconds: EXAM_DURATION_SECONDS,
+      remainingSeconds: durationSeconds,
       paused: false,
       startedAt: new Date(now).toISOString(),
       lastTickAt: new Date(now).toISOString(),
@@ -131,10 +139,10 @@ export function ExamMode({ questionBank, courseId }: { questionBank: ExamQuestio
 
   const submitExam = () => {
     if (!exam) return;
-    const attempt = buildAttempt(exam);
+    const attempt = buildAttempt(exam, questionBank);
     const next = [attempt, ...attempts].slice(0, 24);
     setAttempts(next);
-    saveExamAttempts(next);
+    saveExamAttempts(next, courseId);
     setExam(null);
     setShowSubmit(false);
     setTab("results");
@@ -171,6 +179,8 @@ export function ExamMode({ questionBank, courseId }: { questionBank: ExamQuestio
     setExam({ ...exam, flaggedIds: flagged ? exam.flaggedIds.filter((id) => id !== activeQuestion.id) : [...exam.flaggedIds, activeQuestion.id] });
   };
 
+  if (!timedExamAvailable) return <section className="exam-mode"><div className="concept-view"><header><span>COURSE STUDY MAP</span><h1>Explore this course’s concepts</h1><p>Use Practice in the study workspace for this course’s questions. No certification exam format has been configured for this course.</p></header>{!conceptGraphLoaded ? <div className="graph-loading">Loading this course’s local concept graph…</div> : conceptGraph ? <Suspense fallback={<div className="graph-loading">Loading the local 3D graph…</div>}><ConceptGraph3D key={`${courseId}-${conceptGraph.graphId ?? "graph"}`} graph={conceptGraph} /></Suspense> : <div className="graph-loading">This course does not have a concept graph yet.</div>}</div></section>;
+
   return (
     <section className="exam-mode">
       <header className="exam-mode-tabs">
@@ -183,15 +193,15 @@ export function ExamMode({ questionBank, courseId }: { questionBank: ExamQuestio
       </header>
 
       {tab === "session" && (!hydrated ? <div className="exam-loading">Loading your local exam session…</div> : !exam || !activeQuestion ? (
-        <ExamStart attempts={attempts} onStart={startExam} onOpenResults={() => setTab("results")} onOpenConcepts={() => setTab("concepts")} />
+        <ExamStart courseName={courseName} isCca={isCca} questionCount={Math.min(60, questionBank.length)} graph={conceptGraph} attempts={attempts} onStart={startExam} onOpenResults={() => setTab("results")} onOpenConcepts={() => setTab("concepts")} />
       ) : (
         <div className="exam-taking">
           <section className="exam-question-area">
             <header className="exam-title-row">
-              <div><span>CCA-F SIMULATION</span><h1>Foundations exam</h1></div>
+              <div><span>{isCca ? "CCA-F SIMULATION" : "PRACTICE EXAM"}</span><h1>{courseName}</h1></div>
               <div className="exam-clock"><span>Time remaining</span><strong>{formatClock(exam.remainingSeconds)}</strong><button type="button" onClick={() => setExam({ ...exam, paused: !exam.paused, lastTickAt: new Date().toISOString() })}>{exam.paused ? <CirclePlay aria-hidden="true" /> : <CirclePause aria-hidden="true" />}{exam.paused ? "Resume" : "Pause"}</button></div>
             </header>
-            <div className="exam-question-meta"><b>Question {exam.currentIndex + 1} of {questions.length}</b><div><span>{domains[activeQuestion.domain].name} · {domains[activeQuestion.domain].weight}%</span><em>{activeQuestion.difficulty}</em></div></div>
+            <div className="exam-question-meta"><b>Question {exam.currentIndex + 1} of {questions.length}</b><div><span>{domains[activeQuestion.domain]?.name ?? activeQuestion.domain} · {domains[activeQuestion.domain]?.weight ?? 0}% {isCca ? "blueprint" : "of bank"}</span><em>{activeQuestion.difficulty}</em></div></div>
             <div className="exam-study-aids" aria-label="Answer display options">
               <span>Study aids</span>
               <button type="button" className={activeStudyAid === "correct" ? "active" : ""} aria-pressed={activeStudyAid === "correct"} onClick={() => toggleStudyAid("correct")}><Eye aria-hidden="true" /> Highlight correct answer</button>
@@ -214,7 +224,7 @@ export function ExamMode({ questionBank, courseId }: { questionBank: ExamQuestio
           </section>
           <aside className="exam-navigator">
             <section><h2>Question navigator</h2><div className="navigator-legend"><span><i className="answered" />Answered</span><span><i className="current" />Current</span><span><Flag aria-hidden="true" />Flagged</span></div><div className="question-grid">{questions.map((question, index) => <button type="button" key={question.id} onClick={() => goTo(index)} className={`${exam.currentIndex === index ? "current" : ""} ${exam.responses.some((item) => item.questionId === question.id) ? "answered" : ""} ${exam.flaggedIds.includes(question.id) ? "flagged" : ""}`}>{index + 1}</button>)}</div></section>
-            <section className="exam-distribution"><h2>Domain distribution</h2>{domainOrder.map((domain) => <div key={domain}><span><b>{domains[domain].short}</b><strong>{domains[domain].weight}%</strong></span><i><em style={{ width: `${domains[domain].weight * 3.2}%` }} /></i></div>)}<p>60 questions selected by published blueprint weight. This local bank uses single-answer scenarios.</p></section>
+            <section className="exam-distribution"><h2>Domain distribution</h2>{domainOrder.map((domain) => <div key={domain}><span><b>{domains[domain]?.short ?? domain}</b><strong>{domains[domain].weight}%</strong></span><i><em style={{ width: `${domains[domain].weight * 3.2}%` }} /></i></div>)}<p>{isCca ? "Selected by published blueprint weight." : "Topic percentages describe this local bank, not an official exam blueprint."} Single-answer practice scenarios.</p></section>
             <button className="submit-link" type="button" onClick={() => setShowSubmit(true)}>Finish and score exam</button>
           </aside>
           {exam.paused && <div className="exam-paused"><section><CirclePause aria-hidden="true" /><span>EXAM PAUSED</span><h2>Your timer is stopped.</h2><p>Your answers and remaining time are saved on this device.</p><button type="button" onClick={() => setExam({ ...exam, paused: false, lastTickAt: new Date().toISOString() })}><CirclePlay aria-hidden="true" /> Resume exam</button></section></div>}
@@ -222,21 +232,22 @@ export function ExamMode({ questionBank, courseId }: { questionBank: ExamQuestio
         </div>
       ))}
 
-      {tab === "results" && <ExamResults attempts={attempts} onStart={startExam} />}
+      {tab === "results" && <ExamResults domains={domains} attempts={attempts} onStart={startExam} />}
       {tab === "concepts" && <div className="concept-view"><header><span>CONCEPT RELATIONSHIPS</span><h1>Traverse the architecture</h1><p>Orbit, zoom, and select a node to explore how mechanisms and decision rules reinforce one another across domains.</p></header>{!conceptGraphLoaded ? <div className="graph-loading">Loading this course’s local concept graph…</div> : conceptGraph ? <Suspense fallback={<div className="graph-loading">Loading the local 3D graph…</div>}><ConceptGraph3D key={`${courseId}-${conceptGraph.graphId ?? "graph"}`} graph={conceptGraph} /></Suspense> : <div className="graph-loading">This course does not have a concept graph yet. An agent can add one through Vidmark MCP.</div>}</div>}
     </section>
   );
 }
 
-function ExamStart({ attempts, onStart, onOpenResults, onOpenConcepts }: { attempts: ExamAttempt[]; onStart: () => void; onOpenResults: () => void; onOpenConcepts: () => void }) {
+function ExamStart({ courseName, isCca, questionCount, graph, attempts, onStart, onOpenResults, onOpenConcepts }: { courseName: string; isCca: boolean; questionCount: number; graph: ConceptGraph | null; attempts: ExamAttempt[]; onStart: () => void; onOpenResults: () => void; onOpenConcepts: () => void }) {
   return <div className="exam-start">
-    <section className="exam-start-hero"><span>CCA-F · FULL-LENGTH SIMULATION</span><h1>Rehearse the decisions,<br />not just the definitions.</h1><p>A 60-question, 120-minute sitting sampled from your local bank in the published 27/18/20/20/15 domain ratio. Pause is available as a study convenience; the live exam timer does not pause.</p><button type="button" onClick={onStart}><Clock3 aria-hidden="true" /> Start timed exam</button><small>Scenario-based · one correct answer · saved only on this device</small></section>
-    <aside className="exam-start-details"><div><TimerReset aria-hidden="true" /><span><b>120 minutes</b><small>Two minutes per question</small></span></div><div><BarChart3 aria-hidden="true" /><span><b>Blueprint-weighted</b><small>All five domains represented</small></span></div><div><RotateCcw aria-hidden="true" /><span><b>Retained attempts</b><small>Compare progress over time</small></span></div><div><Network aria-hidden="true" /><span><b>Concept graph</b><small>40 concepts, 83 connections</small></span></div>{attempts.length > 0 && <div className="prior-result"><span>Latest result</span><strong>{attempts[0].percent}%</strong><button onClick={onOpenResults}>View comparison →</button></div>}<button className="explore-concepts" onClick={onOpenConcepts}>Explore concept map</button></aside>
+    <section className="exam-start-hero"><span>{isCca ? "CCA-F · FULL-LENGTH SIMULATION" : `${courseName} · PRACTICE EXAM`}</span><h1>Rehearse the decisions,<br />not just the definitions.</h1><p>{isCca ? "A 60-question, 120-minute sitting sampled from your local bank in the published 27/18/20/20/15 domain ratio. Pause is available as a study convenience; the live exam timer does not pause." : `${questionCount} original questions, ${questionCount * 2} minutes, with answers, explanations, flags, pause/resume, and saved results. Timing is a local study setting, not an official certification requirement.`}</p><button type="button" onClick={onStart}><Clock3 aria-hidden="true" /> Start timed exam</button><small>Scenario-based · one correct answer · saved only on this device</small></section>
+    <aside className="exam-start-details"><div><TimerReset aria-hidden="true" /><span><b>{isCca ? 120 : questionCount * 2} minutes</b><small>Two minutes per question</small></span></div><div><BarChart3 aria-hidden="true" /><span><b>{isCca ? "Blueprint-weighted" : "Course-specific"}</b><small>{isCca ? "All five domains represented" : "Questions from this course only"}</small></span></div><div><RotateCcw aria-hidden="true" /><span><b>Retained attempts</b><small>Compare progress over time</small></span></div><div><Network aria-hidden="true" /><span><b>Concept graph</b><small>{graph ? `${graph.nodes.filter(n => n.kind === "concept").length} concepts` : "Course relationships"}</small></span></div>{attempts.length > 0 && <div className="prior-result"><span>Latest result</span><strong>{attempts[0].percent}%</strong><button onClick={onOpenResults}>View comparison →</button></div>}<button className="explore-concepts" onClick={onOpenConcepts}>Explore concept map</button></aside>
   </div>;
 }
 
-function ExamResults({ attempts, onStart }: { attempts: ExamAttempt[]; onStart: () => void }) {
+function ExamResults({ domains, attempts, onStart }: { domains: ReturnType<typeof courseDomains>; attempts: ExamAttempt[]; onStart: () => void }) {
   if (!attempts.length) return <div className="empty-results"><Trophy aria-hidden="true" /><h1>No completed exams yet</h1><p>Complete a timed simulation to begin comparing strengths, weaknesses, and pacing across attempts.</p><button type="button" onClick={onStart}>Start your first exam</button></div>;
+  const domainOrder = [...new Set(attempts.flatMap(a => a.domainResults.map(d => d.domain)))];
   const chronological = [...attempts].reverse().slice(-8);
   const latest = attempts[0];
   const best = Math.max(...attempts.map((attempt) => attempt.percent));
@@ -246,7 +257,7 @@ function ExamResults({ attempts, onStart }: { attempts: ExamAttempt[]; onStart: 
     <header><div><span>LOCAL EXAM HISTORY</span><h1>Exam performance</h1><div className="results-course-name"><small>Course</small><strong>{latest.courseName}</strong></div><p>Compare completed simulations and identify persistent domain patterns.</p></div><button type="button" onClick={onStart}><TimerReset aria-hidden="true" /> Start another exam</button></header>
     <div className="result-metrics"><article><span>Latest score</span><strong>{latest.percent}%</strong><small>{new Date(latest.completedAt).toLocaleDateString()}</small></article><article><span>Personal best</span><strong>{best}%</strong><small>Across {attempts.length} attempt{attempts.length === 1 ? "" : "s"}</small></article><article><span>Attempts</span><strong>{attempts.length}</strong><small>Stored on this device</small></article><article><span>Average pace</span><strong>{formatDuration(averagePace)}</strong><small>Per question</small></article></div>
     <div className="analytics-grid"><section className="score-chart"><header><h2>Score over time</h2><span>Most recent {chronological.length} attempts</span></header><svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="Exam score trend"><g className="chart-grid"><line x1="8" y1="19" x2="92" y2="19"/><line x1="8" y1="55" x2="92" y2="55"/><line x1="8" y1="91" x2="92" y2="91"/></g>{points.length > 1 && <polyline points={points.map((point) => `${point.x},${point.y}`).join(" ")} />}{points.map((point) => <g key={point.attempt.id}><circle cx={point.x} cy={point.y} r="1.8"/><text x={point.x} y={point.y - 5}>{point.attempt.percent}%</text></g>)}</svg><div className="chart-labels">{chronological.map((attempt, index) => <span key={attempt.id}>#{attempts.length - chronological.length + index + 1}<small>{new Date(attempt.completedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</small></span>)}</div></section>
-      <section className="domain-chart"><header><h2>Performance by domain</h2><span>Last {Math.min(attempts.length, 5)} attempts</span></header><div className="domain-bars">{domainOrder.map((domain) => <div key={domain}><span>{domains[domain].short}</span><div>{attempts.slice(0, 5).reverse().map((attempt, index) => { const result = attempt.domainResults.find((item) => item.domain === domain); return <i key={attempt.id} title={`Attempt ${attempts.length - index}: ${result?.percent ?? 0}%`} style={{ height: `${Math.max(4, (result?.percent ?? 0) * .85)}%`, background: attemptColors[index] }} />; })}</div><b>{latest.domainResults.find((item) => item.domain === domain)?.percent ?? 0}%</b></div>)}</div><div className="strength-read"><b>Current pattern</b><p>Strongest: {domains[[...latest.domainResults].sort((a,b) => b.percent-a.percent)[0].domain].short}. Weakest: {domains[[...latest.domainResults].sort((a,b) => a.percent-b.percent)[0].domain].short}. Compare another full sitting before treating a one-exam swing as stable.</p></div></section></div>
+      <section className="domain-chart"><header><h2>Performance by domain</h2><span>Last {Math.min(attempts.length, 5)} attempts</span></header><div className="domain-bars">{domainOrder.map((domain) => <div key={domain}><span>{domains[domain]?.short ?? domain}</span><div>{attempts.slice(0, 5).reverse().map((attempt, index) => { const result = attempt.domainResults.find((item) => item.domain === domain); return <i key={attempt.id} title={`Attempt ${attempts.length - index}: ${result?.percent ?? 0}%`} style={{ height: `${Math.max(4, (result?.percent ?? 0) * .85)}%`, background: attemptColors[index] }} />; })}</div><b>{latest.domainResults.find((item) => item.domain === domain)?.percent ?? 0}%</b></div>)}</div><div className="strength-read"><b>Current pattern</b><p>Strongest: {domains[[...latest.domainResults].sort((a,b) => b.percent-a.percent)[0]?.domain]?.short ?? "—"}. Weakest: {domains[[...latest.domainResults].sort((a,b) => a.percent-b.percent)[0]?.domain]?.short ?? "—"}. Compare another full sitting before treating a one-exam swing as stable.</p></div></section></div>
     <section className="attempt-history"><header><h2>Saved exam attempts</h2><span>{attempts.length} retained locally</span></header>{attempts.map((attempt, index) => <article key={attempt.id}><i style={{ background: attemptColors[index % attemptColors.length] }} /><div><b>Attempt {attempts.length - index}{index === 0 ? " · latest" : ""}</b><small>{attempt.courseName}</small></div><strong>{attempt.percent}%</strong><span>{attempt.correct}/{attempt.totalQuestions} correct</span><span>{formatDuration(attempt.durationSeconds)}</span><time>{new Date(attempt.completedAt).toLocaleString()}</time></article>)}</section>
   </div>;
 }

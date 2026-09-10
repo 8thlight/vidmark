@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import { composeCourseBuildPrompt } from "../app/course-prompts";
+import { webUrl, youtubeId } from "../app/course-source";
 import { acquireYouTubeTranscript } from "./transcript-acquisition";
 import { getSystemPrompt } from "../app/system-prompts";
 import { getSystemPromptSettings, readSystemPromptOverrides, writeSystemPromptOverrides } from "./system-prompt-store";
@@ -13,6 +14,7 @@ const MCP_PORT = Number(process.env.VIDMARK_MCP_PORT ?? 31417);
 const choice = z.enum(["A", "B", "C", "D"]);
 const questionSchema = z.object({
   id: z.string().min(1), enabled: z.boolean().default(true), sectionId: z.string().min(1), domainId: z.string().min(1),
+  chapter: z.string().optional(), domainLabel: z.string().optional(),
   difficulty: z.enum(["foundational", "standard", "advanced"]), mode: z.enum(["standard", "hard"]), scenario: z.string().min(1), question: z.string().min(1),
   options: z.object({ A: z.object({ text: z.string().min(1), rationale: z.string().min(1) }), B: z.object({ text: z.string().min(1), rationale: z.string().min(1) }), C: z.object({ text: z.string().min(1), rationale: z.string().min(1) }), D: z.object({ text: z.string().min(1), rationale: z.string().min(1) }) }),
   correctAnswer: choice,
@@ -39,8 +41,16 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
       const instruction = course ? composeCourseBuildPrompt(String(course.title), String(course.id), String(course.coursePrompt), String(course.promptCredit), getSystemPrompt("courseBuilderMaster", storedPrompts.overrides)) : `Course ${courseId} was not found. Call list_courses and choose a valid course ID before continuing.`;
       return { messages: [{ role: "user" as const, content: { type: "text" as const, text: instruction } }] };
     });
-    server.registerTool("upsert_course", { description: "Create or update course metadata and its required credited course-specific prompt.", inputSchema: z.object({ courseId: z.string().min(1), title: z.string().min(1), source: z.string().default("YouTube"), videoUrl: z.string().url(), coursePrompt: z.string().min(1), promptCredit: z.string().min(1) }) }, async (input) => { const saved = store.upsertCourse({ id: input.courseId, title: input.title, source: input.source, videoUrl: input.videoUrl, originPrompt: input.coursePrompt, promptCredit: input.promptCredit }); return textResult({ saved: input.courseId, revision: saved?.revision }); });
-    server.registerTool("save_course_build", { description: "Replace reviewed course-level artifacts, including its concept graph. Prefer granular tools when changing an individual artifact.", inputSchema: z.object({ courseId: z.string().min(1), studyGuide: z.string().optional(), researchNotes: z.string().optional(), chaptersJson: z.string().optional(), questionsJson: z.string().optional(), conceptGraphJson: z.string().optional() }) }, async ({ courseId, studyGuide, researchNotes, chaptersJson, questionsJson, conceptGraphJson }) => {
+    server.registerTool("upsert_course", { description: "Create or update a course from a web source or optional YouTube video. New courses require sourceUrl or videoUrl. Omit videoUrl for a non-video course. Course-specific prompt and credit are required.", inputSchema: z.object({ courseId: z.string().min(1), title: z.string().min(1), source: z.string().optional(), sourceUrl: z.string().url().optional(), videoUrl: z.union([z.string().url(), z.literal("")]).optional(), coursePrompt: z.string().min(1), promptCredit: z.string().min(1) }) }, async (input) => {
+      const existing = store.getCourse(input.courseId);
+      const videoUrl = input.videoUrl ?? String(existing?.videoUrl ?? "");
+      const sourceUrl = input.sourceUrl ?? String(existing?.sourceUrl || videoUrl);
+      if (!webUrl(sourceUrl)) throw new Error("A course requires an HTTP(S) sourceUrl or videoUrl.");
+      if (input.videoUrl && !youtubeId(input.videoUrl)) throw new Error("Primary video URLs must be supported YouTube links. Use sourceUrl for other resources or chapter videos for supporting media.");
+      const saved = store.upsertCourse({ id: input.courseId, title: input.title, source: input.source ?? (existing ? undefined : videoUrl ? "YouTube" : "Web"), videoUrl, sourceUrl, originPrompt: input.coursePrompt, promptCredit: input.promptCredit });
+      return textResult({ saved: input.courseId, revision: saved?.revision });
+    });
+    server.registerTool("save_course_build", { description: "Replace reviewed course-level artifacts, including its concept graph. Prefer granular tools when changing an individual artifact.", inputSchema: z.object({ courseId: z.string().min(1), studyGuide: z.string().optional(), researchNotes: z.string().optional(), chaptersJson: z.string().optional().describe("Array of chapters: id, title, summary, optional content, learningObjectives, and videos: [{title, url, startSeconds?}]. Timestamps are optional for non-video courses."), questionsJson: z.string().optional(), conceptGraphJson: z.string().optional() }) }, async ({ courseId, studyGuide, researchNotes, chaptersJson, questionsJson, conceptGraphJson }) => {
       const course = store.getCourse(courseId); if (!course) return textResult({ error: `Course ${courseId} was not found.` });
       const chapters = parseArray(chaptersJson, "chaptersJson"); const questions = parseArray(questionsJson, "questionsJson"); const conceptGraph = conceptGraphJson ? parseRecord(conceptGraphJson, "conceptGraphJson") : undefined;
       store.upsertCourse({ id: courseId, title: String(course.title), source: String(course.source), videoUrl: String(course.videoUrl), originPrompt: String(course.coursePrompt), promptCredit: String(course.promptCredit), studyGuide, researchNotes });
@@ -65,6 +75,7 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
     server.registerTool("acquire_course_transcript", { description: "Retrieve a course video's public YouTube caption track, preserve its timestamps, and save it to local SQLite. Use this when get_transcript reports no cues; it does not bypass authentication or unavailable captions.", inputSchema: z.object({ courseId: z.string().min(1), preferredLanguage: z.string().min(2).max(20).default("en") }) }, async ({ courseId, preferredLanguage }) => {
       const course = store.getCourse(courseId);
       if (!course) return textResult({ error: `Course ${courseId} was not found.` });
+      if (!course.videoUrl) return textResult({ error: "This is a non-video course. Read its sourceUrl; no transcript is required." });
       const acquired = await acquireYouTubeTranscript(String(course.videoUrl ?? course.videoId ?? course.id), preferredLanguage);
       store.replaceTranscript(courseId, acquired.cues);
       return textResult({ saved: courseId, cues: acquired.cues.length, videoId: acquired.videoId, language: acquired.language, trackName: acquired.trackName, automaticallyGenerated: acquired.automaticallyGenerated, sourceUrl: acquired.sourceUrl, acquiredAt: acquired.acquiredAt });
@@ -111,6 +122,12 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
       if (url.pathname === "/api/preferences") { if (request.method === "GET") return Response.json({ preferences: store.getSyncPreferences() }, { headers }); if (request.method === "POST") { const preferences = store.saveSyncPreferences(await request.json() as { autoImportQuestions?: boolean; relayUrl?: string }); sync.refreshRelay(); return Response.json({ preferences }, { headers }); } }
       if (url.pathname === "/api/system-prompts") { if (request.method === "GET") return Response.json(await getSystemPromptSettings(systemPromptsPath), { headers }); if (request.method === "PUT") return Response.json(await writeSystemPromptOverrides(systemPromptsPath, (await request.json() as { overrides?: unknown }).overrides), { headers }); }
       if (url.pathname === "/api/courses" && request.method === "GET") return Response.json({ courses: store.listCourses() }, { headers });
+      if (url.pathname === "/api/courses" && request.method === "POST") {
+        const input = z.object({ id: z.string().trim().min(1), title: z.string().trim().min(1), source: z.string().min(1), sourceUrl: z.string().url(), videoUrl: z.union([z.string().url(), z.literal("")]).default(""), originPrompt: z.string().trim().min(1), promptCredit: z.string().trim().min(1) }).parse(await request.json());
+        if (input.videoUrl && !youtubeId(input.videoUrl)) return Response.json({ error: "Primary video URLs must be supported YouTube links. Use the source URL for other resources." }, { status: 400, headers });
+        if (store.getCourse(input.id)) return Response.json({ error: "This course already exists. Open it from the library." }, { status: 409, headers });
+        return Response.json({ course: store.upsertCourse({ ...input, active: true }) }, { status: 201, headers });
+      }
       const courseRoute = url.pathname.match(/^\/api\/courses\/([^/]+)$/); if (courseRoute && request.method === "GET") return Response.json({ course: store.getCourse(decodeURIComponent(courseRoute[1])) }, { headers });
       if (url.pathname === "/api/concept-graph" && request.method === "GET") return Response.json({ conceptGraph: store.getConceptGraph(url.searchParams.get("courseId") ?? "") }, { headers });
       if (url.pathname === "/api/concept-graph" && request.method === "POST") { const body = await request.json() as { courseId: string; conceptGraph: Record<string, unknown>; expectedRevision?: number }; return Response.json({ conceptGraph: store.saveConceptGraph(body.courseId, body.conceptGraph, body.expectedRevision) }, { headers }); }
@@ -150,4 +167,4 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
   console.log(`Vidmark MCP 3.1 is listening at http://127.0.0.1:${MCP_PORT}/mcp with SQLite at ${databasePath}`);
   return { stop(force = false) { sync.stop(); server.stop(force); store.close(); }, store, sync, server };
 }
-type BrowserSyncCourse = { id: string; title: string; source?: string; videoUrl?: string; originPrompt?: string; promptCredit?: string; transcript?: Array<{ time: number; text: string }>; conceptGraph?: unknown };
+type BrowserSyncCourse = { id: string; title: string; source?: string; videoUrl?: string; sourceUrl?: string; originPrompt?: string; promptCredit?: string; transcript?: Array<{ time: number; text: string }>; conceptGraph?: unknown };

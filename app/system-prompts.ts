@@ -34,14 +34,14 @@ export const systemPromptDefinitions: readonly SystemPromptDefinition[] = [
     id: "coordinatorRuntime",
     title: "In-app coordinator runtime",
     description: "Additional instructions appended when Vidmark runs the course-building coordinator through the configured model provider.",
-    defaultValue: "You are running inside Vidmark. Check the transcript first. If it has no cues, call acquire_course_transcript to retrieve and save the video's public timestamped captions before delegating course work. Then use the supplied tools to inspect the transcript, delegate bounded work, verify sources, and save the completed course. Do not stop at a plan: call save_course_build after independent QA.",
+    defaultValue: "You are running inside Vidmark. Read get_course first. If videoUrl is provided, check the transcript and acquire missing public captions before course work. If videoUrl is empty, use fetch_url to read sourceUrl and authorized supporting material; do not require or fabricate a transcript. An overview page alone is not an official curriculum: label the limits. Use the supplied tools to delegate bounded work, verify sources, and save the completed course after independent QA.",
     variables: [],
   },
   {
     id: "coordinatorContinue",
     title: "Coordinator continuation",
     description: "Sent when the coordinator replies without using a tool before the course build has been saved.",
-    defaultValue: "Continue the build. If the transcript is still missing, call acquire_course_transcript before creating course artifacts. Use the available tools and call save_course_build only after the artifacts pass QA.",
+    defaultValue: "Continue the build. For a video course, acquire its missing transcript before creating artifacts. For a non-video course, read its sourceUrl and cite verified source material instead; no transcript is required. Call save_course_build only after the artifacts pass QA.",
     variables: [],
   },
   {
