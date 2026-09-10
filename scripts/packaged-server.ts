@@ -7,6 +7,7 @@ import { startVidmarkMcpServer } from "./vidmark-mcp";
 import { startModelProviderServer } from "./model-provider";
 import { startNoteStorageServer } from "./note-storage";
 import { requireNativeServiceLease } from "./native-service-lease";
+import { waitForServiceReadiness } from "./service-readiness";
 
 const APP_PORT = 3010;
 const TRANSCRIPTION_PORT = 31415;
@@ -145,28 +146,7 @@ async function main() {
     transcription.stdin.write(`${process.env.VIDMARK_SESSION_TOKEN}\n`);
     transcription.stdin.flush();
   }
-  const reader = transcription.stdout.getReader();
-  let readinessTimeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      (async () => {
-        const decoder = new TextDecoder();
-        let output = "";
-        const marker = `VIDMARK_TRANSCRIPTION_READY ${process.env.VIDMARK_SESSION_TOKEN ?? "development"}`;
-        while (true) {
-          const chunk = await reader.read();
-          if (chunk.done) throw new Error("Transcription stopped before binding its port.");
-          output += decoder.decode(chunk.value, { stream: true });
-          if (output.split("\n").includes(marker)) return;
-          if (output.length > 16384) throw new Error("Unexpected transcription startup output.");
-        }
-      })(),
-      new Promise<never>((_, reject) => { readinessTimeout = setTimeout(() => reject(new Error("Transcription startup timed out.")), 5000); }),
-    ]);
-  } finally {
-    if (readinessTimeout) clearTimeout(readinessTimeout);
-    reader.releaseLock();
-  }
+  await waitForServiceReadiness(transcription.stdout, `VIDMARK_TRANSCRIPTION_READY ${process.env.VIDMARK_SESSION_TOKEN ?? "development"}`);
   const mcp = await startVidmarkMcpServer(databasePath, { systemPromptsPath });
   cleanups.push(() => mcp.stop(true));
   const provider = startModelProviderServer(providerSettingsPath, databasePath, systemPromptsPath);

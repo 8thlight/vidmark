@@ -4,6 +4,8 @@ import { join, resolve } from "node:path";
 import { createConnection } from "node:net";
 
 const ports = [3010, 31415, 31417, 31418, 31419];
+const sessionToken = crypto.randomUUID();
+const ready = (output: string) => output.split("\n").slice(0, -1).includes(`VIDMARK_READY ${sessionToken}`);
 const listening = (port: number) => new Promise<boolean>((resolve) => {
   const socket = createConnection({ host: "127.0.0.1", port });
   const finish = (result: boolean) => { socket.destroy(); resolve(result); };
@@ -33,7 +35,7 @@ try {
     if ((await Promise.all(ports.map(listening))).some(Boolean)) throw new Error("Direct server launch opened a service.");
   }
   for (const mode of ["stop", "close", "crash"]) {
-    const server = Bun.spawn([host, executable], {
+    const server = Bun.spawn([host, executable, sessionToken], {
       env: environment, stdin: "pipe", stdout: "pipe", stderr: "inherit",
     });
     let startupOutput = "";
@@ -44,7 +46,7 @@ try {
     })();
     try {
       const deadline = Date.now() + 15_000;
-      while (!(await Promise.all(ports.map(listening))).every(Boolean) || !startupOutput.includes("VIDMARK_READY ")) {
+      while (!(await Promise.all(ports.map(listening))).every(Boolean) || !ready(startupOutput)) {
         if (server.exitCode !== null || Date.now() > deadline) throw new Error("Packaged services did not start.");
         await Bun.sleep(100);
       }
@@ -52,7 +54,7 @@ try {
       else { server.stdin.write(`${mode}\n`); server.stdin.flush(); }
       const stopped = await Promise.race([server.exited.then(() => true), Bun.sleep(5000).then(() => false)]);
       if (!stopped) throw new Error("Packaged server did not exit after SIGTERM.");
-      if (!(await output).includes("VIDMARK_READY ")) throw new Error("Server did not emit its native readiness handshake.");
+      if (!ready(await output)) throw new Error("Server did not emit the exact native session readiness handshake.");
       await Bun.sleep(700);
       for (const port of ports) {
         if (await listening(port)) throw new Error(`Service ${port} survived shutdown.`);
@@ -63,7 +65,7 @@ try {
   }
   for (const occupiedPort of ports) {
     const unrelated = Bun.serve({ hostname: "127.0.0.1", port: occupiedPort, fetch: () => new Response("unrelated application") });
-    const server = Bun.spawn([host, executable], { env: environment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const server = Bun.spawn([host, executable, sessionToken], { env: environment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     const output = new Response(server.stdout).text();
     try {
       const code = await Promise.race([server.exited, Bun.sleep(7000).then(() => null)]);

@@ -24,7 +24,7 @@
     "agent:verify": ".tools/bun/bin/bun scripts/verify-agent-workflow.ts",
     "dxt:verify": ".tools/bun/bin/bun scripts/verify-dxt.ts",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log .tools/bun/bin/bun node_modules/vinext/dist/cli.js start",
-    "test": "pnpm run build && .tools/bun/bin/bun test tests/rendered-html.test.mjs tests/concept-graph.test.ts tests/question-sharing.test.ts tests/system-prompts.test.ts tests/transcript-acquisition.test.ts",
+    "test": "pnpm run build && .tools/bun/bin/bun test tests/rendered-html.test.mjs tests/concept-graph.test.ts tests/question-sharing.test.ts tests/system-prompts.test.ts tests/transcript-acquisition.test.ts tests/service-readiness.test.ts",
     "lint": ".tools/bun/bin/bun node_modules/eslint/bin/eslint.js . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {

@@ -9,7 +9,7 @@ struct ServiceHost {
         let pipe = Pipe()
         child.standardInput = pipe
         var environment = ProcessInfo.processInfo.environment
-        let token = UUID().uuidString
+        let token = CommandLine.arguments[2]
         environment["VIDMARK_SESSION_TOKEN"] = token
         child.environment = environment
         child.terminationHandler = { process in
