@@ -1,12 +1,13 @@
 {
   "name": "vidmark",
-  "version": "1.2.0",
+  "version": "1.3.2",
   "private": true,
   "packageManager": "pnpm@11.19.0",
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
+    "test:native": "zsh scripts/test-native-authentication.sh",
     "dev": ".tools/bun/bin/bun scripts/local-dev.mjs",
     "build:transcriber": "zsh scripts/build-native-transcriber.sh",
     "notes:transcribe": ".tools/bun/bin/bun scripts/transcription-server.mjs",

@@ -47,8 +47,8 @@ print "[4/8] Compiling the standalone Bun server…"
 "$BUN" build "$ROOT/scripts/packaged-server.ts" --compile --target=bun-darwin-arm64 --minify --sourcemap --outfile "$APP/Contents/MacOS/VidmarkServer"
 
 print "[5/8] Compiling the native shell and Apple Speech helper…"
-/usr/bin/xcrun swiftc "$ROOT/packaging/VidmarkApp.swift" -O -target arm64-apple-macos13.0 \
-  -F "$SPARKLE_HOME" -framework Sparkle -framework AppKit -framework WebKit \
+/usr/bin/xcrun swiftc "$ROOT/packaging/VidmarkAccessSession.swift" "$ROOT/packaging/VidmarkAuthentication.swift" "$ROOT/packaging/VidmarkApp.swift" -O -target arm64-apple-macos13.0 \
+  -F "$SPARKLE_HOME" -framework Sparkle -framework AppKit -framework LocalAuthentication -framework Security -framework WebKit \
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
   -o "$APP/Contents/MacOS/Vidmark"
 /bin/zsh "$ROOT/scripts/build-native-transcriber.sh" "$APP/Contents/MacOS/VidmarkTranscriber"

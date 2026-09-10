@@ -1,26 +1,64 @@
-<?xml version="1.0" standalone="yes"?><!-- sparkle-sign-warning:
+<?xml version="1.0" standalone="yes"?>
+<!-- sparkle-sign-warning:
 IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
---><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+-->
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>Vidmark</title>
         <item>
-            <title>1.2.0</title>
-            <pubDate>Fri, 04 Sep 2026 16:39:31 -0400</pubDate>
-            <sparkle:version>4</sparkle:version>
-            <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
+            <title>1.3.2</title>
+            <pubDate>Wed, 09 Sep 2026 21:51:22 -0400</pubDate>
+            <sparkle:version>7</sparkle:version>
+            <sparkle:shortVersionString>1.3.2</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Vidmark 1.2.0
+            <description sparkle:format="markdown"><![CDATA[# Vidmark 1.3.2
 
-- Adds secure automatic application updates and a **Check for Updates…** menu command.
-- Ignores shared-question events when the incoming question is identical to the local version.
-- Shows exact changed fields when reviewing a shared question update.
-- Uses Apple Speech for on-device voice-note transcription.
+- Keeps Vidmark locked if authentication finishes after a sleep or lock event.
+- Discards pending workspace and notification responses from a previous unlocked session.
+- Requires authentication before changing the unlock method and handles malformed PIN settings through Mac authentication recovery.
+- Preserves notification destinations until Vidmark is unlocked.
+- Waits for local services to stop before reopening the workspace.
+- Explains how to unlock Vidmark when Claude Desktop cannot connect.
 ]]></description>
-            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.2.0.dmg" length="41172174" type="application/octet-stream" sparkle:edSignature="/tiHhbyzKLVRJAFe8b0fvfDLrKRAadOGmMqr3SVX0YjGoven6u3LsjVPex/b3Cqo9ZL1tH/LhaufIg/m/e8aCA=="></enclosure>
+            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.3.2.dmg" length="41205492" type="application/octet-stream" sparkle:edSignature="azcz9fdCXyUVaZ6sKNnlJlN2uuRTC2L2NCPu+4AUeGUiPdAu/lKEIf+j6OlDglHSfgT4NOqba4HV3YqiUMgqAw=="/>
+        </item>
+        <item>
+            <title>1.3.1</title>
+            <pubDate>Fri, 04 Sep 2026 18:26:05 -0400</pubDate>
+            <sparkle:version>6</sparkle:version>
+            <sparkle:shortVersionString>1.3.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Vidmark 1.3.1
+
+- Requires authentication before opening local study data or starting Vidmark's local services.
+- Supports Touch ID or the Mac login password through Apple Local Authentication.
+- Supports a six-digit app PIN stored as a salted, one-way local verifier.
+- Adds manual locking, security settings, and automatic locking when the Mac sleeps or the user session locks.
+- Requires Mac authentication to recover from incomplete or invalid saved security state.
+]]></description>
+            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.3.1.dmg" length="41225935" type="application/octet-stream" sparkle:edSignature="J5MUYeu63z8Y19PemfdFk30FDVdEkW/pXfa6ginAHUv/xIcPbT2rKpNVM3TJDTfpAX46WfwpV495qa5J1qU/CA=="/>
+        </item>
+        <item>
+            <title>1.3.0</title>
+            <pubDate>Fri, 04 Sep 2026 16:50:29 -0400</pubDate>
+            <sparkle:version>5</sparkle:version>
+            <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Vidmark 1.3.0
+
+- Requires authentication before opening local study data or starting Vidmark's local services.
+- Supports Touch ID or the Mac login password through Apple Local Authentication.
+- Supports a six-digit app PIN stored as a salted, one-way local verifier.
+- Adds manual locking, security settings, and automatic locking when the Mac sleeps or the user session locks.
+]]></description>
+            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.3.0.dmg" length="41225043" type="application/octet-stream" sparkle:edSignature="minsbYTiEu4OdiFDpLhiz8egxWiynjPhxlar8BHmpKXWef0VYx910jOX+xpMacezJ/kfpXx+3Fh4Wjypzb0PCg=="/>
         </item>
     </channel>
-</rss><!-- sparkle-signatures:
-edSignature: lHbNpQePjBheyQysgnRNZu3XdCF+e/OTOE9kJ8BFuy5QRsC99r8eL+oK160VX+hY4HYjKhe2dRHxXFOLlUIUCQ==
-length: 1515
+</rss>
+<!-- sparkle-signatures:
+edSignature: X2kd2KYd832HEPXe4dEode2Pp5Gs51kYIcAPHzsf4UG/U1SjDKwYT0a22OxLNw3WRrrZpYiwGuGm3EndF2IiCg==
+length: 4037
 -->

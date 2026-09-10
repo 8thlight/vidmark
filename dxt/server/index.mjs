@@ -36,7 +36,7 @@ const ensureVidmark = async () => {
     if (await isReady()) return;
     await pause(250);
   }
-  throw new Error(`${appName} did not start its local MCP service. Install Vidmark in Applications, open it once, and try again.`);
+  throw new Error(`${appName} is not ready. Open Vidmark in Applications and unlock it with Mac authentication or your PIN, then retry the connection.`);
 };
 
 const writeMessage = (message) => {
