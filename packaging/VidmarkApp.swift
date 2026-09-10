@@ -43,6 +43,9 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     private var pendingNotificationTarget: (target: String, entityId: String)?
     private var serverProcess: Process?
     private var serverInput: FileHandle?
+    private var serverOutput: FileHandle?
+    private var serverOutputBuffer = ""
+    private var serverReady = false
     private var serverLog: FileHandle?
     private var claudeExtensionURL: URL?
     private var isTerminating = false
@@ -352,7 +355,27 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         process.environment = environment
         let input = Pipe()
         process.standardInput = input
-        process.standardOutput = serverLog
+        let output = Pipe()
+        process.standardOutput = output
+        serverOutput = output.fileHandleForReading
+        serverOutputBuffer = ""
+        serverReady = false
+        let revision = accessSession.revision
+        output.fileHandleForReading.readabilityHandler = { [weak self, weak process] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
+            DispatchQueue.main.async {
+                guard let self, let process, self.serverProcess === process, self.accessSession.acceptsWork(from: revision) else { return }
+                self.serverOutputBuffer += String(decoding: data, as: UTF8.self)
+                while let newline = self.serverOutputBuffer.firstIndex(of: "\n") {
+                    let line = String(self.serverOutputBuffer[..<newline])
+                    self.serverOutputBuffer.removeSubrange(...newline)
+                    if line == "VIDMARK_READY \(sessionToken)" { self.serverReady = true }
+                    else { try? self.serverLog?.write(contentsOf: Data((line + "\n").utf8)) }
+                }
+                self.serverOutputBuffer = String(self.serverOutputBuffer.suffix(65536))
+            }
+        }
         process.standardError = serverLog
         process.terminationHandler = { [weak self] process in
             DispatchQueue.main.async {
@@ -364,6 +387,7 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
             try process.run()
             serverProcess = process
             try input.fileHandleForReading.close()
+            try output.fileHandleForWriting.close()
             serverInput = input.fileHandleForWriting
             try serverInput?.write(contentsOf: Data("\(sessionToken)\n".utf8))
         } catch {
@@ -378,28 +402,20 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         readinessTimer?.invalidate()
         readinessTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] timer in
             guard let self, self.accessSession.acceptsWork(from: revision) else { timer.invalidate(); return }
-            var request = URLRequest(url: self.appURL)
-            request.timeoutInterval = 0.8
-            URLSession.shared.dataTask(with: request) { _, response, _ in
-                guard let http = response as? HTTPURLResponse, (200..<500).contains(http.statusCode) else {
-                    DispatchQueue.main.async {
-                        guard timer.isValid, self.accessSession.acceptsWork(from: revision) else { return }
-                        self.readinessAttempts += 1
-                        if self.readinessAttempts >= 120 {
-                            timer.invalidate()
-                            self.showStartupError("Vidmark did not become ready within 30 seconds. Check ~/Library/Logs/Vidmark/server.log.")
-                        }
-                    }
-                    return
-                }
-                DispatchQueue.main.async {
-                    guard timer.isValid, self.accessSession.acceptsWork(from: revision) else { return }
-                    timer.invalidate()
-                    self.statusLabel.stringValue = "Loading workspace…"
-                    self.webView.load(URLRequest(url: self.appURL))
-                    self.startNotificationPolling()
-                }
-            }.resume()
+            guard self.serverProcess?.isRunning == true else { timer.invalidate(); return }
+            if self.serverReady {
+                timer.invalidate()
+                self.statusLabel.stringValue = "Loading workspace…"
+                self.webView.load(URLRequest(url: self.appURL))
+                self.startNotificationPolling()
+                return
+            }
+            self.readinessAttempts += 1
+            if self.readinessAttempts >= 120 {
+                timer.invalidate()
+                self.stopServer()
+                self.showStartupError("Vidmark did not become ready within 30 seconds. Check ~/Library/Logs/Vidmark/server.log.")
+            }
         }
     }
 
@@ -502,6 +518,8 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     private func stopServer() {
+        serverReady = false
+        serverOutput?.readabilityHandler = nil
         try? serverInput?.close()
         serverInput = nil
         if let process = serverProcess, process.isRunning {
@@ -514,6 +532,8 @@ final class VidmarkAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
             process.waitUntilExit()
         }
         serverProcess = nil
+        try? serverOutput?.close()
+        serverOutput = nil
         try? serverLog?.close()
         serverLog = nil
     }

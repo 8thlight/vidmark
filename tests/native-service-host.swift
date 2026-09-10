@@ -12,6 +12,9 @@ struct ServiceHost {
         let token = UUID().uuidString
         environment["VIDMARK_SESSION_TOKEN"] = token
         child.environment = environment
+        child.terminationHandler = { process in
+            if process.terminationStatus != 0 { exit(process.terminationStatus) }
+        }
         try child.run()
         try pipe.fileHandleForReading.close()
         try pipe.fileHandleForWriting.write(contentsOf: Data("\(token)\n".utf8))

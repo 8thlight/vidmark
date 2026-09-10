@@ -4,3 +4,4 @@
 - Requires the native app's active unlock session before a bundled service can start.
 - Cleans up surviving services from older releases at launch.
 - Ignores expected cancelled page loads during lock and unlock.
+- Opens the workspace only after its own services confirm readiness; port conflicts stop startup.

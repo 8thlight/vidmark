@@ -103,6 +103,7 @@ async function startTranscriptionBridge() {
     },
   });
   console.log(`Vidmark Bun transcription bridge is listening at http://127.0.0.1:${TRANSCRIPTION_PORT}`);
+  console.log(`VIDMARK_TRANSCRIPTION_READY ${process.env.VIDMARK_SESSION_TOKEN ?? "development"}`);
   await new Promise(() => {});
 }
 
@@ -124,27 +125,58 @@ async function main() {
   const noteStoragePath = join(process.env.HOME ?? tmpdir(), "Library", "Application Support", "Vidmark", "notes");
   await mkdir(logDir, { recursive: true });
 
-  const transcription = Bun.spawn([process.execPath, "--transcription"], { stdin: "pipe", stdout: "inherit", stderr: "inherit" });
+  let shuttingDown = false;
+  const cleanups: Array<() => void> = [];
+  process.once("exit", () => {
+    shuttingDown = true;
+    for (const cleanup of cleanups.reverse()) { try { cleanup(); } catch { /* Continue closing the other services. */ } }
+  });
+  process.once("SIGINT", () => process.exit(0));
+  process.once("SIGTERM", () => process.exit(0));
+  const transcription = Bun.spawn([process.execPath, "--transcription"], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+  cleanups.push(() => transcription.kill("SIGTERM"));
+  void transcription.exited.then(() => {
+    if (!shuttingDown) {
+      console.error("Vidmark transcription service stopped. Closing the workspace to prevent use of an unrelated listener.");
+      process.exit(1);
+    }
+  });
   if (isPackaged) {
     transcription.stdin.write(`${process.env.VIDMARK_SESSION_TOKEN}\n`);
     transcription.stdin.flush();
   }
-  process.once("exit", () => transcription.kill("SIGTERM"));
+  const reader = transcription.stdout.getReader();
+  let readinessTimeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      (async () => {
+        const decoder = new TextDecoder();
+        let output = "";
+        const marker = `VIDMARK_TRANSCRIPTION_READY ${process.env.VIDMARK_SESSION_TOKEN ?? "development"}`;
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) throw new Error("Transcription stopped before binding its port.");
+          output += decoder.decode(chunk.value, { stream: true });
+          if (output.split("\n").includes(marker)) return;
+          if (output.length > 16384) throw new Error("Unexpected transcription startup output.");
+        }
+      })(),
+      new Promise<never>((_, reject) => { readinessTimeout = setTimeout(() => reject(new Error("Transcription startup timed out.")), 5000); }),
+    ]);
+  } finally {
+    if (readinessTimeout) clearTimeout(readinessTimeout);
+    reader.releaseLock();
+  }
   const mcp = await startVidmarkMcpServer(databasePath, { systemPromptsPath });
+  cleanups.push(() => mcp.stop(true));
   const provider = startModelProviderServer(providerSettingsPath, databasePath, systemPromptsPath);
+  cleanups.push(() => provider.stop(true));
   const noteStorage = startNoteStorageServer(noteStoragePath);
+  cleanups.push(() => noteStorage.stop(true));
   const app = await startProdServer({ port: APP_PORT, host: "127.0.0.1", outDir: join(resourcesDir, "dist") });
+  cleanups.push(() => { app.server.closeAllConnections(); app.server.close(); });
 
-  const shutdown = () => {
-    transcription.kill("SIGTERM");
-    mcp.stop(true);
-    provider.stop(true);
-    noteStorage.stop(true);
-    app.server.close();
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
-  process.on("exit", shutdown);
+  if (isPackaged) console.log(`VIDMARK_READY ${process.env.VIDMARK_SESSION_TOKEN}`);
 
   openApp();
   console.log(`Vidmark is running at ${APP_URL} with Bun ${Bun.version}`);

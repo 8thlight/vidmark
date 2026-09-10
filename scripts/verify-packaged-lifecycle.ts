@@ -34,11 +34,17 @@ try {
   }
   for (const mode of ["stop", "close", "crash"]) {
     const server = Bun.spawn([host, executable], {
-      env: environment, stdin: "pipe", stdout: "ignore", stderr: "inherit",
+      env: environment, stdin: "pipe", stdout: "pipe", stderr: "inherit",
     });
+    let startupOutput = "";
+    const output = (async () => {
+      const decoder = new TextDecoder();
+      for await (const chunk of server.stdout) startupOutput += decoder.decode(chunk, { stream: true });
+      return startupOutput;
+    })();
     try {
       const deadline = Date.now() + 15_000;
-      while (!(await Promise.all(ports.map(listening))).every(Boolean)) {
+      while (!(await Promise.all(ports.map(listening))).every(Boolean) || !startupOutput.includes("VIDMARK_READY ")) {
         if (server.exitCode !== null || Date.now() > deadline) throw new Error("Packaged services did not start.");
         await Bun.sleep(100);
       }
@@ -46,6 +52,7 @@ try {
       else { server.stdin.write(`${mode}\n`); server.stdin.flush(); }
       const stopped = await Promise.race([server.exited.then(() => true), Bun.sleep(5000).then(() => false)]);
       if (!stopped) throw new Error("Packaged server did not exit after SIGTERM.");
+      if (!(await output).includes("VIDMARK_READY ")) throw new Error("Server did not emit its native readiness handshake.");
       await Bun.sleep(700);
       for (const port of ports) {
         if (await listening(port)) throw new Error(`Service ${port} survived shutdown.`);
@@ -54,7 +61,24 @@ try {
       if (server.exitCode === null) { server.kill("SIGKILL"); await server.exited; }
     }
   }
-  console.log("Packaged lifecycle passed: direct/forged launches rejected; all five services close on graceful stop, lease loss, and native-parent crash.");
+  for (const occupiedPort of ports) {
+    const unrelated = Bun.serve({ hostname: "127.0.0.1", port: occupiedPort, fetch: () => new Response("unrelated application") });
+    const server = Bun.spawn([host, executable], { env: environment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const output = new Response(server.stdout).text();
+    try {
+      const code = await Promise.race([server.exited, Bun.sleep(7000).then(() => null)]);
+      if (code === null || code === 0) throw new Error(`Port conflict ${occupiedPort} did not abort startup.`);
+      if ((await output).includes("VIDMARK_READY ")) throw new Error(`Port conflict ${occupiedPort} was reported as ready.`);
+      await Bun.sleep(700);
+      for (const port of ports.filter((port) => port !== occupiedPort)) {
+        if (await listening(port)) throw new Error(`Port ${port} survived failed startup.`);
+      }
+    } finally {
+      if (server.exitCode === null) { server.kill("SIGKILL"); await server.exited; }
+      unrelated.stop(true);
+    }
+  }
+  console.log("Packaged lifecycle passed: direct/forged launches rejected; all five services close on stop, lease loss, and parent crash; every port conflict aborts without a readiness signal.");
 } finally {
   await rm(root, { recursive: true, force: true });
 }
