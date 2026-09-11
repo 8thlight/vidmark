@@ -17,7 +17,7 @@ const textResult = (value: unknown) => ({ content: [{ type: "text" as const, tex
 const parseRecord = (value: string, label: string) => { const parsed = JSON.parse(value) as unknown; if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${label} must be a JSON object.`); return parsed as Record<string, unknown>; };
 const parseArray = (value: string | undefined, label: string) => { if (!value) return undefined; const parsed = JSON.parse(value) as unknown; if (!Array.isArray(parsed)) throw new Error(`${label} must be a JSON array.`); return parsed; };
 
-export async function startVidmarkMcpServer(databasePath: string, options: { systemPromptsPath?: string } = {}) {
+export async function startVidmarkMcpServer(databasePath: string, options: { systemPromptsPath?: string; port?: number; acquireTranscript?: typeof acquireYouTubeTranscript } = {}) {
   await mkdir(dirname(databasePath), { recursive: true });
   const systemPromptsPath = options.systemPromptsPath ?? join(dirname(databasePath), "system-prompts.json");
   const store = new VidmarkDatabase(databasePath);
@@ -67,8 +67,9 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
       const course = store.getCourse(courseId);
       if (!course) return textResult({ error: `Course ${courseId} was not found.` });
       if (!course.videoUrl) return textResult({ error: "This is a non-video course. Read its sourceUrl; no transcript is required." });
-      const acquired = await acquireYouTubeTranscript(String(course.videoUrl ?? course.videoId ?? course.id), preferredLanguage);
-      store.replaceTranscript(courseId, acquired.cues);
+      const transcriptHash = store.transcriptHash(courseId);
+      const acquired = await (options.acquireTranscript ?? acquireYouTubeTranscript)(String(course.videoUrl ?? course.videoId ?? course.id), preferredLanguage);
+      store.replaceTranscript(courseId, acquired.cues, transcriptHash);
       return textResult({ saved: courseId, cues: acquired.cues.length, videoId: acquired.videoId, language: acquired.language, trackName: acquired.trackName, automaticallyGenerated: acquired.automaticallyGenerated, sourceUrl: acquired.sourceUrl, acquiredAt: acquired.acquiredAt });
     });
     server.registerTool("list_notes", { description: "List text and voice-note transcripts, optionally filtered by course.", inputSchema: z.object({ courseId: z.string().optional(), query: z.string().optional() }) }, async ({ courseId, query }) => { const notes = store.listNotes(courseId, query); return textResult({ count: notes.length, notes }); });
@@ -99,14 +100,17 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
     return server;
   });
 
-  const allowedOrigins = new Set((process.env.VIDMARK_ALLOWED_ORIGINS ?? "http://127.0.0.1:3010,http://localhost:3010").split(",").map((value) => value.trim()).filter(Boolean));
+  const appPort = Number(process.env.VIDMARK_APP_PORT ?? 3010);
+  const allowedOrigins = new Set((process.env.VIDMARK_ALLOWED_ORIGINS ?? `http://127.0.0.1:${appPort},http://localhost:${appPort}`).split(",").map((value) => value.trim()).filter(Boolean));
   const corsHeaders = (request: Request) => { const origin = request.headers.get("origin"); const allowed = origin && allowedOrigins.has(origin) ? origin : [...allowedOrigins][0] ?? "http://127.0.0.1:3010"; return { "Access-Control-Allow-Origin": allowed, "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, MCP-Protocol-Version, Mcp-Session-Id, Mcp-Method, Mcp-Name", "Access-Control-Expose-Headers": "Mcp-Session-Id" }; };
-  const server = Bun.serve({ hostname: "127.0.0.1", port: MCP_PORT, idleTimeout: 120, async fetch(request) {
+  const server = Bun.serve({ hostname: "127.0.0.1", port: options.port ?? MCP_PORT, idleTimeout: 120, async fetch(request): Promise<Response> {
     const url = new URL(request.url); const headers = corsHeaders(request); const host = request.headers.get("host")?.split(":")[0];
     if (host !== "127.0.0.1" && host !== "localhost") return Response.json({ error: "Invalid Host header." }, { status: 403, headers });
+    const origin = request.headers.get("origin");
+    if (origin !== null && !allowedOrigins.has(origin)) return Response.json({ error: "Origin not allowed." }, { status: 403 });
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
     try {
-      if (url.pathname === "/health") return Response.json({ ok: true, name: "vidmark-local", version: "3.2.0", mcp: `http://127.0.0.1:${MCP_PORT}/mcp`, databasePath, sync: sync.getStatus() }, { headers });
+      if (url.pathname === "/health") return Response.json({ ok: true, name: "vidmark-local", version: "3.2.0", mcp: `http://127.0.0.1:${server.port}/mcp`, databasePath, sync: sync.getStatus() }, { headers });
       if (url.pathname === "/state" && request.method === "GET") return Response.json({ activeCourseId: store.listCourses().find((course) => course.active)?.id ?? "", courses: store.listCourses(), notes: store.listNotes(), profile: store.getProfile() }, { headers });
       if (url.pathname === "/state/sync" && request.method === "POST") { const incoming = await request.json() as { activeCourseId?: string; courses?: BrowserSyncCourse[]; notes?: Array<Record<string, unknown>> }; store.syncBrowserCourses(incoming.courses ?? [], incoming.activeCourseId); for (const note of incoming.notes ?? []) store.upsertNote(note); return Response.json({ ok: true, courses: store.listCourses().length, notes: store.listNotes().length }, { headers }); }
       if (url.pathname === "/api/profile") { if (request.method === "GET") return Response.json({ profile: store.getProfile() }, { headers }); if (request.method === "POST") { const profile = store.saveProfile(await request.json() as { name: string; email: string; avatarStyle: string; avatarSeed: string }); await sync.registerDirectory(); return Response.json({ profile }, { headers }); } }
@@ -161,7 +165,7 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
       return Response.json({ error: "Not found" }, { status: 404, headers });
     } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Vidmark request failed." }, { status: 400, headers }); }
   }});
-  console.log(`Vidmark MCP 3.1 is listening at http://127.0.0.1:${MCP_PORT}/mcp with SQLite at ${databasePath}`);
+  console.log(`Vidmark MCP 3.1 is listening at http://127.0.0.1:${server.port}/mcp with SQLite at ${databasePath}`);
   return { stop(force = false) { reviews.close(); sync.stop(); server.stop(force); store.close(); }, store, sync, server };
 }
 type BrowserSyncCourse = { id: string; title: string; source?: string; videoUrl?: string; sourceUrl?: string; originPrompt?: string; promptCredit?: string; transcript?: Array<{ time: number; text: string }>; conceptGraph?: unknown };

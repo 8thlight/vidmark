@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import * as z from "zod";
-import { questionSchema, chapterSchema, questionReviewSchema, buildRequirementsSchema, validateQuestion } from "./course-artifacts";
+import { questionSchema, chapterSchema, agentQuestionReviewSchema, buildRequirementsSchema, validateQuestion } from "./course-artifacts";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { safeFetchUrl } from "./research-fetch";
 import { CourseReviewEvidence } from "./course-review-evidence";
@@ -119,7 +119,7 @@ const localTools = [
   { type: "function", function: { name: "set_course_build_requirements", description: "Record the user's requested quantity and chapter coverage before authoring. Omit quantity only when none was requested.", parameters: z.toJSONSchema(buildRequirementsSchema) } },
   { type: "function", function: { name: "get_course_question", description: "Read a saved question and its current revision before QA.", parameters: { type: "object", properties: { questionId: { type: "string" } }, required: ["questionId"] } } },
   { type: "function", function: { name: "upsert_course_question", description: "Before the first complete save, stage questions without changing the library. Commit staged questions by omitting questions in save_course_build. After saving, only exact-revision edits of active questions are allowed. Save a single schema-valid question incrementally. Does not mark the whole build complete.", parameters: { type: "object", properties: { question: z.toJSONSchema(questionSchema), expectedRevision: { type: "integer" } }, required: ["question"] } } },
-  { type: "function", function: { name: "record_question_review", description: "Optionally record QA of an exact saved question revision after inspecting original evidence. Not required to save.", parameters: { type: "object", properties: { questionId: { type: "string" }, expectedRevision: { type: "integer" }, review: z.toJSONSchema(questionReviewSchema) }, required: ["questionId", "expectedRevision", "review"] } } },
+  { type: "function", function: { name: "record_question_review", description: "Optionally record QA of an exact saved question revision after inspecting original evidence. Not required to save.", parameters: { type: "object", properties: { questionId: { type: "string" }, expectedRevision: { type: "integer" }, review: z.toJSONSchema(agentQuestionReviewSchema) }, required: ["questionId", "expectedRevision", "review"] } } },
   { type: "function", function: { name: "get_course", description: "Read the selected course metadata and existing generated artifacts.", parameters: { type: "object", properties: {}, additionalProperties: false } } },
   { type: "function", function: { name: "get_course_artifact", description: "Read a saved artifact as paginated JSON text before updating a course. Concatenate content pages until nextOffset is null, then parse JSON. The revision identifies changes between pages; restart reading if it changes.", parameters: z.toJSONSchema(artifactPageSchema) } },
   { type: "function", function: { name: "list_course_questions", description: "Read the active saved question bank in pages before updating a course. Use get_course_question for an exact question read before QA.", parameters: z.toJSONSchema(questionPageSchema) } },
@@ -131,7 +131,7 @@ const localTools = [
 ];
 
 
-export const runBuild = async (job: BuildJob, settings: ProviderSettings, databasePath: string, systemPromptsPath: string, debug: DebugLog, signal: AbortSignal, dependencies = { callModel, fetchResearch: (url: string, signal: AbortSignal) => researchFetchResult(url, value => safeFetchUrl(value, signal)) }) => {
+export const runBuild = async (job: BuildJob, settings: ProviderSettings, databasePath: string, systemPromptsPath: string, debug: DebugLog, signal: AbortSignal, dependencies: { callModel: typeof callModel; fetchResearch: (url: string, signal: AbortSignal) => ReturnType<typeof researchFetchResult>; acquireTranscript?: typeof acquireYouTubeTranscript } = { callModel, fetchResearch: (url, signal) => researchFetchResult(url, value => safeFetchUrl(value, signal)) }) => {
   debug.record("build.started");
   const store = new VidmarkDatabase(databasePath);
   const reviewEvidence = new CourseReviewEvidence(id => store.getTranscript(id, undefined, 100000).cues);
@@ -191,7 +191,7 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
               stagedQuestions.set(question.id, question);
               result = { staged: true, savedToLibrary: false, stagedCount: stagedQuestions.size };
             } else {
-              const questions = store.listQuestions(String(course.id), { limit: 1000 }).questions.map(q => q.id === question.id ? question : q.payload);
+              const questions = store.activeQuestionPayloads(String(course.id)).map(q => q.id === question.id ? question : q);
               if (!current || expectedRevision === undefined) throw new Error("After saving, only existing questions can be edited. Start a new complete build to add questions.");
               result = store.saveCourseBuild(String(course.id), { questions }, { id: question.id, expectedRevision });
             }
@@ -220,9 +220,10 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
           } else if (call.function.name === "acquire_course_transcript") {
             if (!course.videoUrl) { messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: "Non-video course: read sourceUrl with fetch_url instead. No transcript is required." }) }); continue; }
             updateJob(job, "Acquiring transcript", "Retrieving the video's public timestamped YouTube captions.");
-            const acquired = await acquireYouTubeTranscript(String(course.videoUrl ?? course.videoId ?? course.id), String(args.preferredLanguage ?? "en"), signal);
+            const transcriptHash = store.transcriptHash(String(course.id));
+            const acquired = await (dependencies.acquireTranscript ?? acquireYouTubeTranscript)(String(course.videoUrl ?? course.videoId ?? course.id), String(args.preferredLanguage ?? "en"), signal);
             signal.throwIfAborted();
-            store.replaceTranscript(String(course.id), acquired.cues);
+            store.replaceTranscript(String(course.id), acquired.cues, transcriptHash);
             course.transcript = acquired.cues;
             job.transcriptCues = acquired.cues.length;
             result = { saved: true, cues: acquired.cues.length, videoId: acquired.videoId, language: acquired.language, trackName: acquired.trackName, automaticallyGenerated: acquired.automaticallyGenerated, sourceUrl: acquired.sourceUrl, acquiredAt: acquired.acquiredAt };
@@ -288,6 +289,18 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
     store.close();
   }
 };
+
+export async function settleAgentTask(pending: Promise<unknown>, job: BuildJob, cleanup: () => void, onFailure: () => void) {
+  try { await pending; }
+  catch {
+    // The worker may reject before initialization or during cleanup. Never leave
+    // an unobserved rejected promise or a permanently queued/running job.
+    if (job.status !== "complete" && job.status !== "failed") {
+      Object.assign(job, { status: "failed", phase: "Agent stopped", message: "The agent could not finish. Check Settings and try again.", error: "Agent task failed unexpectedly.", updatedAt: Date.now() });
+      onFailure();
+    }
+  } finally { cleanup(); }
+}
 
 export function startModelProviderServer(settingsPath: string, databasePath: string, systemPromptsPath = join(dirname(settingsPath), "system-prompts.json"), port = PROVIDER_PORT) {
   const debug = new DebugLog(join(dirname(settingsPath), "Diagnostics"));
@@ -382,7 +395,7 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
           const pending = agent.harness === "provider"
             ? runBuild(job, settings, databasePath, systemPromptsPath, debug, controller.signal)
             : runCliCourseBuild(job, agent, databasePath, systemPromptsPath, debug, controller.signal, url => researchFetchResult(url, value => safeFetchUrl(value, controller.signal)));
-          void pending.finally(() => { clearTimeout(timeout); cancellations.delete(job.id); });
+          void settleAgentTask(pending, job, () => { clearTimeout(timeout); cancellations.delete(job.id); }, () => debug.record("build.failed"));
           return Response.json(job, { status: 202, headers });
         }
         if (request.method === "GET" && url.pathname === "/build") {
@@ -420,7 +433,8 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
           factChecks.set(job.id, job);
           const controller = new AbortController(); cancellations.set(job.id, controller);
           const timeout = setTimeout(() => controller.abort(), 15 * 60_000);
-          void runQuestionFactCheck(job, agent, databasePath, systemPromptsPath, debug, controller.signal, url => researchFetchResult(url, value => safeFetchUrl(value, controller.signal)), { model: settings.model, call: (messages, tools, signal) => callModel(settings, messages, tools, 4096, "required", signal) }).finally(() => { clearTimeout(timeout); cancellations.delete(job.id); });
+          const pending = runQuestionFactCheck(job, agent, databasePath, systemPromptsPath, debug, controller.signal, url => researchFetchResult(url, value => safeFetchUrl(value, controller.signal)), { model: settings.model, call: (messages, tools, signal) => callModel(settings, messages, tools, 4096, "required", signal) });
+          void settleAgentTask(pending, job, () => { clearTimeout(timeout); cancellations.delete(job.id); }, () => debug.record("fact-check.failed"));
           return Response.json(job, { status: 202, headers });
         }
         if (request.method === "GET" && url.pathname === "/fact-check") {

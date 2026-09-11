@@ -1,4 +1,4 @@
-import { questionReviewSchema } from "./course-artifacts";
+import { agentQuestionReviewSchema } from "./course-artifacts";
 import type { QuestionRecord } from "./vidmark-db";
 import { createHash } from "node:crypto";
 
@@ -25,7 +25,7 @@ export class CourseReviewEvidence {
     return evidenceId;
   }
   validate(questionId: string, revision: number, input: unknown) {
-    const review = questionReviewSchema.parse(input);
+    const review = agentQuestionReviewSchema.parse(input);
     const read = this.questions.get(questionId);
     if (!read || read.revision !== revision || read.contentHash !== review.contentHash) throw new Error("Read this exact saved question version with get_course_question before recording QA.");
     const noEvidence = review.outcome === "inconclusive" && review.evidence.length === 1 && review.evidence[0] === "No sufficient source evidence was retrieved.";

@@ -25,3 +25,7 @@ export const chapterSchema = z.object({ id: text, title: text, summary: text, co
 export const buildRequirementsSchema = z.object({ questionCount: z.number().int().min(1).max(1000).optional(), chapterIds: z.array(text).optional() });
 export type BuildRequirements = z.infer<typeof buildRequirementsSchema>;
 export const questionReviewSchema = z.object({ contentHash: z.string().regex(/^[a-f0-9]{64}$/), reviewer: text, notes: text, evidence: z.array(text).min(1), outcome: z.enum(["reviewed", "needs_changes", "inconclusive"]) });
+// New agent-authored reports use one contract; the parser above remains for
+// historical shared reports created before reasoning limits were introduced.
+export const agentQuestionReviewSchema = questionReviewSchema.extend({ notes: z.string().trim().min(20).max(12000), evidence: z.array(text).min(1).max(30) });
+export const transcriptSchema = z.array(z.object({ time: z.number().finite().min(0), text: z.string().trim().min(1) })).max(100000);

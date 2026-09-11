@@ -166,6 +166,7 @@ export default function Home() {
   }, []);
   const refreshLibraryFromDatabase = useCallback(async () => {
     const summaries = await getLocalCourses();
+    const activeCounts = new Map(summaries.map(course => [course.id, course.questions]));
     const records = await Promise.all(summaries.map((course) => getLocalCourse(course.id)));
     const synced = records.flatMap((course) => course ? [{
       id: String(course.id), sourceKey: String(course.videoId ?? course.id), sourceUrl: String(course.sourceUrl ?? course.videoUrl ?? ""), videoUrl: String(course.videoUrl ?? ""), title: String(course.title), source: String(course.source ?? "YouTube"),
@@ -173,7 +174,7 @@ export default function Home() {
       transcript: Array.isArray(course.transcript) ? course.transcript as TranscriptCue[] : [],
       studyGuide: typeof course.studyGuide === "string" ? course.studyGuide : undefined,
       chapters: Array.isArray(course.chapters) ? course.chapters as Array<Record<string, unknown>> : [],
-      questionCount: Array.isArray(course.questions) ? course.questions.length : 0,
+      questionCount: activeCounts.get(String(course.id)) ?? 0,
       conceptGraphRevision: typeof course.conceptGraphRevision === "number" ? course.conceptGraphRevision : null,
     }] : []);
     if (!libraryInitialized.current) {
@@ -231,7 +232,7 @@ export default function Home() {
     if (!libraryLoaded) return;
     const timer = window.setTimeout(() => {
       void syncMcpState(
-        library.map((video) => ({ id: video.id, title: video.title, source: video.source, originPrompt: video.originPrompt, promptCredit: video.promptCredit, sourceUrl: video.sourceUrl, videoUrl: video.videoUrl ?? (bundledVideoIds.has(video.id) ? `https://www.youtube.com/watch?v=${video.id}` : "") })),
+        library.map((video) => ({ id: video.id, title: video.title, source: video.source, originPrompt: video.originPrompt, promptCredit: video.promptCredit, sourceUrl: video.sourceUrl, transcript: video.transcript, videoUrl: video.videoUrl ?? (bundledVideoIds.has(video.id) ? `https://www.youtube.com/watch?v=${video.id}` : "") })),
         savedNotes.filter((note) => !note.sharedFromPeer).map((note) => ({ id: note.id, courseId: note.courseId, chapterId: note.chapterId, chapterTitle: note.chapterTitle, text: note.text, source: note.source, updatedAt: note.updatedAt, hasAudio: Boolean(note.audio || note.audioUrl) })),
         activeVideoId,
       );

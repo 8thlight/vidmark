@@ -38,7 +38,7 @@ export function requestPinned(url: URL, address: string, signal: AbortSignal): P
       const encoding = response.headers["content-encoding"];
       if (encoding && encoding !== "identity") { finish(new Error("Compressed documentation responses are not supported.")); return; }
       const type = String(response.headers["content-type"] ?? "").toLowerCase();
-      if (type && !/text|json|xml|html/.test(type)) { finish(new Error("Documentation fetch returned an unsupported binary content type.")); return; }
+      if (!/^(?:text\/[a-z0-9.+-]+|application\/(?:json|xml|[a-z0-9.+-]+\+(?:json|xml)))(?:\s*;|\s*$)/.test(type)) { finish(new Error("Documentation fetch requires a supported text, JSON or XML content type.")); return; }
       let bytes = 0;
       const chunks: Buffer[] = [];
       response.on("data", (chunk: Buffer) => {

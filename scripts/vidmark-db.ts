@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { buildRequirementsSchema, chapterSchema, questionReviewSchema, validateQuestion, type BuildRequirements } from "./course-artifacts";
+import { buildRequirementsSchema, chapterSchema, questionReviewSchema, transcriptSchema, validateQuestion, type BuildRequirements } from "./course-artifacts";
 import type { QuestionReview } from "../app/question-review";
 
 const contentHash = (payload: Record<string, unknown>) => {
@@ -551,11 +551,18 @@ export class VidmarkDatabase {
     return this.getConceptGraph(courseId)!;
   }
 
-  replaceTranscript(courseId: string, cues: Array<{ time: number; text: string }>) {
-    const current = this.getTranscript(courseId, undefined, 100000).cues as Array<{ time: number; text: string }>;
-    if (current.length === cues.length && current.every((cue, index) => cue.time === cues[index]?.time && cue.text === cues[index]?.text)) return;
-    this.prepareCourseMutation(courseId);
+  transcriptHash(courseId: string) {
+    return contentHash({ cues: this.getTranscript(courseId, undefined, 100000).cues });
+  }
+
+  replaceTranscript(courseId: string, input: unknown, expectedHash?: string) {
+    const cues = transcriptSchema.parse(input);
     this.db.transaction(() => {
+      if (!this.db.query("SELECT 1 FROM courses WHERE id=?").get(courseId)) throw new Error("Course not found.");
+      const current = this.getTranscript(courseId, undefined, 100000).cues as Array<{ time: number; text: string }>;
+      if (expectedHash !== undefined && contentHash({ cues: current }) !== expectedHash) throw new Error("Transcript changed during acquisition. The newer transcript was preserved; read it before retrying.");
+      if (current.length === cues.length && current.every((cue, index) => cue.time === cues[index]?.time && cue.text === cues[index]?.text)) return;
+      this.prepareCourseMutation(courseId);
       this.db.query("DELETE FROM transcript_cues WHERE course_id = ?").run(courseId);
       const insert = this.db.query("INSERT INTO transcript_cues(course_id,position,time,text) VALUES (?,?,?,?)");
       cues.forEach((cue, index) => insert.run(courseId, index, cue.time, cue.text));
@@ -634,6 +641,10 @@ export class VidmarkDatabase {
     const rows = this.db.query(`SELECT * FROM questions WHERE ${clauses.join(" AND ")} ORDER BY position LIMIT ? OFFSET ?`).all(...params, limit, offset) as Array<Record<string, unknown>>;
     const total = this.db.query(`SELECT COUNT(*) count FROM questions WHERE ${clauses.join(" AND ")}`).get(...params) as { count: number };
     return { courseId, total: total.count, offset, returned: rows.length, questions: rows.map((row) => this.questionFromRow(row)) };
+  }
+
+  activeQuestionPayloads(courseId: string) {
+    return (this.db.query("SELECT payload_json FROM questions WHERE course_id=? AND archived=0 ORDER BY position").all(courseId) as Array<{ payload_json: string }>).map(row => parseJson<Record<string, unknown>>(row.payload_json, {}));
   }
 
   getQuestion(courseId: string, questionId: string) {

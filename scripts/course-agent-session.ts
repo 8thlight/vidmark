@@ -2,7 +2,7 @@ import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import { VidmarkDatabase } from "./vidmark-db";
 import { acquireYouTubeTranscript } from "./transcript-acquisition";
-import { buildRequirementsSchema, chapterSchema, questionReviewSchema, questionSchema, validateQuestion } from "./course-artifacts";
+import { buildRequirementsSchema, chapterSchema, agentQuestionReviewSchema, questionSchema, validateQuestion } from "./course-artifacts";
 import { composeCourseBuildPrompt } from "../app/course-prompts";
 import { getSystemPrompt, type SystemPromptOverrides } from "../app/system-prompts";
 import { courseAgentToolNames } from "./course-agent-tools";
@@ -32,7 +32,7 @@ export function createCourseAgentSession(store: VidmarkDatabase, courseId: strin
     };
     tool("get_course", "Read this course's identity, requirements and saved artifacts. Transcript is paginated with get_transcript.", scope, () => {
       const current = store.getCourse(courseId)!;
-      return { ...current, transcript: undefined, transcriptCues: current.transcript.length, questions: undefined, questionCount: current.questions.length, buildRequirements: store.getBuildRequirements(courseId) };
+      return { ...current, transcript: undefined, transcriptCues: current.transcript.length, questions: undefined, questionCount: store.listQuestions(courseId).total, buildRequirements: store.getBuildRequirements(courseId) };
     });
     tool("get_transcript", "Read timestamped transcript pages. Continue until offset + cues.length reaches total.", { ...scope, offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(1000).default(250) }, ({ offset, limit }) => {
       const cues = store.getTranscript(courseId, undefined, 100000).cues;
@@ -41,8 +41,9 @@ export function createCourseAgentSession(store: VidmarkDatabase, courseId: strin
     });
     tool("acquire_course_transcript", "Acquire authorized public YouTube captions when the course has no transcript. Never fabricates missing captions.", scope, async () => {
       if (!course.videoUrl) throw new Error("This reading-based course does not need a transcript. Read sourceUrl instead.");
+      const transcriptHash = store.transcriptHash(courseId);
       const acquired = await dependencies.acquireYouTubeTranscript(String(course.videoUrl), "en", signal);
-      ensureActive(); store.replaceTranscript(courseId, acquired.cues);
+      ensureActive(); store.replaceTranscript(courseId, acquired.cues, transcriptHash);
       return { cues: acquired.cues.length, sourceUrl: acquired.sourceUrl, automaticallyGenerated: acquired.automaticallyGenerated };
     });
     tool("fetch_url", "Read a public source URL. Cite the returned evidenceId for QA. Failed fetches are missing evidence, not evidence of a claim.", { url: z.string().url() }, async ({ url }) => { const result = await fetchResearch(url); ensureActive(); evidence.fetched(url, result); return { ...result as object, evidenceId: url }; });
@@ -68,10 +69,10 @@ export function createCourseAgentSession(store: VidmarkDatabase, courseId: strin
       const current = store.getQuestion(courseId, validated.id);
       if (!current || expectedRevision === undefined || current.revision !== expectedRevision) throw new Error("Question revision conflict. Read the latest question first.");
       // Validate the complete bank without weakening coverage/evidence constraints.
-      const questions = store.listQuestions(courseId, { limit: 1000 }).questions.map(q => q.id === validated.id ? validated : q.payload);
+      const questions = store.activeQuestionPayloads(courseId).map(q => q.id === validated.id ? validated : q);
       return store.saveCourseBuild(courseId, { questions }, { id: validated.id, expectedRevision });
     });
-    tool("record_question_review", "Record optional agent QA for an exact saved revision and content hash after checking its evidence. This does not certify accuracy.", { ...scope, questionId: z.string().min(1), expectedRevision: z.number().int().min(1), review: questionReviewSchema }, ({ questionId, expectedRevision, review }) => {
+    tool("record_question_review", "Record optional agent QA for an exact saved revision and content hash after checking its evidence. This does not certify accuracy.", { ...scope, questionId: z.string().min(1), expectedRevision: z.number().int().min(1), review: agentQuestionReviewSchema }, ({ questionId, expectedRevision, review }) => {
       if (stagedQuestions.has(questionId)) throw new Error("Commit staged questions before recording their QA.");
       return store.reviewQuestion(courseId, questionId, expectedRevision, evidence.validate(questionId, expectedRevision, review), "mcp");
     });

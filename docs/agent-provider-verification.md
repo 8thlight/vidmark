@@ -54,6 +54,10 @@ Before and after review, both questions retained revision 1 and the same content
 - Fact-check CLI launches disable native search and delegation so evidence is retrieved through the four scoped review tools; course builds retain search/delegation. Claude execution remains fixture-verified only.
 - In-app update builds can page through all saved guides, research notes, chapters, graphs and active questions. Source lookup cancellation also works during a stalled DNS response.
 - Full-MCP review schemas and runtime agree on reasoning length and evidence limits. Video reference validation accepts unordered transcripts using their greatest cue timestamp.
+- All agent QA inputs use the same reasoning/evidence limits; legacy shared reports remain readable. Post-save edits reach questions beyond the first 1,000 rows, and active counts exclude archives.
+- Late caption acquisition cannot overwrite a concurrent manual transcript import in either build runtime or full MCP. Central transcript validation rejects invalid shared cues before the import transaction commits.
+- The full local MCP server rejects foreign/opaque browser origins before dispatch, including simple POSTs and preflights, while allowing local CLI clients and the configured UI origin.
+- Task polling stops after completion/failure and restarts for a newly started task. Unexpected worker rejections become terminal job failures and release cancellation resources.
 - Workflow integration verification passes: SQLite artifacts, transcript retention, 48 full-library MCP tools, local coordinator and shared course import.
 - Production frontend build and native arm64 server compilation pass; changed-file lint and whitespace checks pass.
 - Whole-repo TypeScript checking still reports existing errors in the D1 example, worker platform types and the packaged-lifecycle stream test.

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { LoaderCircle, SearchCheck } from "lucide-react";
 import type { QuestionReview } from "./question-review";
 import { QuestionReviewMarker } from "./question-review";
+import { createAgentTaskPoller } from "./agent-task-polling";
 
 const PROVIDER_URL = import.meta.env.VITE_VIDMARK_PROVIDER_ORIGIN || "http://127.0.0.1:31418";
 type AgentJob = { id: string; status: "queued" | "running" | "complete" | "failed"; harness?: string; phase: string; message: string; agentMessage?: string; review?: QuestionReview };
@@ -21,30 +22,29 @@ function useAgentTask(kind: "build" | "fact-check", query: string, onComplete?: 
   const [busy, setBusy] = useState(false);
   const completed = useRef(new Set<string>());
   const completion = useRef(onComplete);
+  const polling = useRef<ReturnType<typeof createAgentTaskPoller<AgentJob>> | null>(null);
   useEffect(() => { completion.current = onComplete; }, [onComplete]);
   useEffect(() => {
-    let active = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const refresh = async () => {
-      try {
-        const result = await request<{ job: AgentJob | null }>(`/${kind}?${query}`);
-        if (!active) return;
-        setJob(result.job);
-        if (result.job?.status === "complete" && !completed.current.has(result.job.id)) {
-          completed.current.add(result.job.id);
-          await completion.current?.();
-        }
-      } catch (error) { if (active) setStatus(error instanceof Error ? error.message : "Agent status unavailable."); }
-      if (active) timer = setTimeout(() => void refresh(), 1500);
-    };
-    void refresh();
-    return () => { active = false; clearTimeout(timer); };
+    const poller = createAgentTaskPoller(async () => (await request<{ job: AgentJob | null }>(`/${kind}?${query}`)).job, async job => {
+      setJob(job);
+      if (job?.status === "complete" && !completed.current.has(job.id)) {
+        completed.current.add(job.id);
+        await completion.current?.();
+      }
+    }, error => setStatus(error instanceof Error ? error.message : "Agent status unavailable."));
+    polling.current = poller;
+    poller.restart();
+    return () => { poller.stop(); if (polling.current === poller) polling.current = null; };
   }, [kind, query]);
   const start = async (input: Record<string, unknown>) => {
+    const poller = polling.current;
     setBusy(true); setStatus("");
-    try { setJob(await request<AgentJob>(`/${kind}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) })); }
-    catch (error) { setStatus(error instanceof Error ? error.message : "Agent could not start. Check Settings."); }
-    finally { setBusy(false); }
+    try {
+      const started = await request<AgentJob>(`/${kind}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+      if (poller && polling.current === poller) { setJob(started); poller.restart(); }
+    }
+    catch (error) { if (polling.current === poller) setStatus(error instanceof Error ? error.message : "Agent could not start. Check Settings."); }
+    finally { if (polling.current === poller) setBusy(false); }
   };
   const cancel = async () => {
     if (!job) return;

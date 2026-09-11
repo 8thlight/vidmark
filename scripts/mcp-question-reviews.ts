@@ -1,12 +1,10 @@
 import type { SystemPromptOverrides } from "../app/system-prompts";
-import { questionReviewSchema } from "./course-artifacts";
+import { agentQuestionReviewSchema } from "./course-artifacts";
 import { createQuestionFactCheck } from "./question-fact-check";
 import { researchFetchResult } from "./research-fetch-result";
 import { safeFetchUrl } from "./research-fetch";
 import { VidmarkDatabase } from "./vidmark-db";
-import * as z from "zod";
-
-export const mcpQuestionReviewSchema = questionReviewSchema.extend({ notes: z.string().trim().min(20).max(12000), evidence: z.array(z.string().trim().min(1)).min(1).max(30) });
+export const mcpQuestionReviewSchema = agentQuestionReviewSchema;
 
 type Entry = {
   courseId: string; questionId: string; revision: number; contentHash: string; reviewer: string; expiresAt: number;

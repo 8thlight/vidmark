@@ -139,6 +139,43 @@ test("scoped transcript acquisition receives the build signal and cannot write a
   } finally { session.close(); }
 });
 
+test("scoped caption acquisition preserves a concurrent manual transcript import", async () => {
+  const id = "scoped-caption-race";
+  db.upsertCourse({ id, title: "Video", videoUrl: "https://youtu.be/o3CX_Y59_74" });
+  const manual = [{ time: 20, text: "Manual correction" }];
+  const session = createCourseAgentSession(db, id, {}, async () => ({}), () => {}, undefined, {
+    acquireYouTubeTranscript: async () => {
+      db.replaceTranscript(id, manual);
+      return { videoId: "o3CX_Y59_74", language: "en", trackName: "Test", automaticallyGenerated: true, sourceUrl: "https://youtube.com", acquiredAt: new Date().toISOString(), cues: [{ time: 0, text: "Late captions" }] };
+    },
+  });
+  try {
+    const result = await rpc(session.url, "tools/call", { name: "acquire_course_transcript", arguments: { courseId: id } });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Transcript changed during acquisition");
+    expect(db.getTranscript(id).cues).toEqual(manual);
+  } finally { session.close(); }
+});
+
+test("scoped post-save edits reach legacy questions beyond page 1000 and report active counts", async () => {
+  const id = "large-existing-bank";
+  makeCourse(id);
+  const bank = Array.from({ length: 1001 }, (_, index) => ({ ...fixture, id: `q${index}`, question: `Distinct question ${index}?` }));
+  const session = createCourseAgentSession(db, id, {}, async () => ({}), () => {});
+  const call = (name: string, args: Record<string, unknown>) => rpc(session.url, "tools/call", { name, arguments: { courseId: id, ...args } });
+  try {
+    await call("set_course_build_requirements", { requirements: {} });
+    expect((await call("save_course_build", { ...artifacts, questions: bank })).isError).not.toBe(true);
+    db.upsertQuestion(id, { ...fixture, id: "archived", question: "Archive" }); db.archiveQuestion(id, "archived");
+    expect(JSON.parse((await call("get_course", {})).content[0].text).questionCount).toBe(1001);
+    expect(db.listCourses().find(course => course.id === id)?.questions).toBe(1001);
+    const target = db.getQuestion(id, "q1000")!;
+    expect((await call("upsert_course_question", { question: { ...target.payload, question: "Edited last question?" }, expectedRevision: target.revision })).isError).not.toBe(true);
+    expect(db.getQuestion(id, target.id)?.payload.question).toBe("Edited last question?");
+    expect(db.getQuestion(id, "archived")?.archived).toBe(true);
+  } finally { session.close(); }
+});
+
 test("discovery rejects every missing flag required by either CLI launch contract", async () => {
   for (const id of ["codex", "claude"] as const) {
     for (const missing of requiredCliFlags[id]) {
@@ -172,11 +209,12 @@ test("scoped question edits preserve archived questions and review history; QA c
     expect(db.getQuestion(id, archived.id)).toEqual(before);
     expect(db.getQuestionReviews(id, archived.id)).toEqual(history);
     const edited = db.getQuestion(id, "q1")!;
-    const input = { questionId: edited.id, expectedRevision: edited.revision, review: { reviewer: "Agent", outcome: "reviewed", notes: "Checked evidence", evidence: ["https://example.com"], contentHash: edited.contentHash } };
+    const input = { questionId: edited.id, expectedRevision: edited.revision, review: { reviewer: "Agent", outcome: "reviewed", notes: "Checked all answers against primary evidence.", evidence: ["https://example.com"], contentHash: edited.contentHash } };
     expect((await call("record_question_review", input)).isError).toBe(true);
     await call("get_course_question", { questionId: "q1" });
     expect((await call("record_question_review", input)).isError).toBe(true);
     await call("fetch_url", { url: "https://example.com" });
+    expect((await call("record_question_review", { ...input, review: { ...input.review, notes: "x" } })).isError).toBe(true);
     expect((await call("record_question_review", input)).isError).not.toBe(true);
     expect(db.getQuestion(id, "q1")?.qaReview?.outcome).toBe("reviewed");
   } finally { session.close(); }
@@ -194,7 +232,7 @@ test("scoped build MCP rejects transcript evidence replaced after the agent read
     const page = JSON.parse((await call("get_transcript", {})).content[0].text);
     db.replaceTranscript(id, [{ time: 0, text: "Different source" }]);
     const q = db.getQuestion(id, "q1")!;
-    const args = { questionId: "q1", expectedRevision: q.revision, review: { reviewer: "Agent", outcome: "reviewed", notes: "Read source", evidence: [page.evidenceId], contentHash: q.contentHash } };
+    const args = { questionId: "q1", expectedRevision: q.revision, review: { reviewer: "Agent", outcome: "reviewed", notes: "Read and checked the primary source.", evidence: [page.evidenceId], contentHash: q.contentHash } };
     const rejected = await call("record_question_review", args);
     expect(rejected.isError).toBe(true);
     expect(rejected.content[0].text).toContain("Transcript evidence changed");

@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VidmarkDatabase, STARTER_COURSE_ID } from "../scripts/vidmark-db";
-import { runBuild, startModelProviderServer } from "../scripts/model-provider";
+import { runBuild, settleAgentTask, startModelProviderServer } from "../scripts/model-provider";
 import { type BuildJob } from "../scripts/cli-course-build";
 import { DebugLog } from "../scripts/debug-log";
 import { researchFetchResult } from "../scripts/research-fetch-result";
@@ -109,6 +109,7 @@ test("in-app build QA rejects a previously retrieved transcript after replacemen
   const q = db.getQuestion(job.courseId, "q1")!;
   let turn = 0;
   let evidenceId = "";
+  let rejection = "";
   await runBuild(job, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
     fetchResearch,
     callModel: async (_settings, messages) => {
@@ -118,14 +119,71 @@ test("in-app build QA rejects a previously retrieved transcript after replacemen
       if (turn === 3) {
         evidenceId = last.evidenceId;
         db.replaceTranscript(job.courseId, [{ time: 0, text: "Changed" }]);
-        return tool("record_question_review", { questionId: "q1", expectedRevision: q.revision, review: { reviewer: "Agent", notes: "Checked", outcome: "reviewed", contentHash: q.contentHash, evidence: [evidenceId] } });
+        return tool("record_question_review", { questionId: "q1", expectedRevision: q.revision, review: { reviewer: "Agent", notes: "Checked the primary source evidence.", outcome: "reviewed", contentHash: q.contentHash, evidence: [evidenceId] } });
       }
-      expect(last.error).toContain("Transcript evidence changed");
+      rejection = last.error;
       throw new Error("Test complete");
     },
   });
   expect(evidenceId).toMatch(/:[a-f0-9]{64}:0-1$/);
+  expect(rejection).toContain("Transcript evidence changed");
   expect(db.getQuestion(job.courseId, "q1")?.qaReview).toBeNull();
+});
+
+test("unexpected task rejections become terminal failures and always release lifecycle resources", async () => {
+  for (const status of ["queued", "running", "complete", "failed"] as const) {
+    const job = { ...jobFor("settle-" + status), status };
+    let cleaned = false, logged = false;
+    await settleAgentTask(Promise.reject(new Error("Failure before worker try")), job, () => { cleaned = true; }, () => { logged = true; });
+    expect(job.status).toBe(status === "complete" ? "complete" : "failed");
+    expect(cleaned).toBe(true);
+    expect(logged).toBe(status === "queued" || status === "running");
+  }
+});
+
+test("in-app acquisition preserves a manual transcript imported while captions are in flight", async () => {
+  const job = jobFor("provider-caption-race");
+  db.upsertCourse({ id: job.courseId, title: "Video", videoUrl: "https://youtu.be/o3CX_Y59_74" });
+  let turn = 0, rejection = "";
+  const manual = [{ time: 7, text: "User-corrected captions" }];
+  await runBuild(job, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
+    fetchResearch,
+    acquireTranscript: async () => {
+      db.replaceTranscript(job.courseId, manual);
+      return { videoId: "o3CX_Y59_74", language: "en", trackName: "Test", automaticallyGenerated: true, sourceUrl: "https://youtube.com", acquiredAt: new Date().toISOString(), cues: [{ time: 0, text: "Late automatic captions" }] };
+    },
+    callModel: async (_settings, messages) => {
+      if (turn++ === 0) return tool("acquire_course_transcript", {});
+      rejection = JSON.parse(messages.at(-1)?.content ?? "{}").error;
+      throw new Error("Test finished");
+    },
+  });
+  expect(rejection).toContain("Transcript changed during acquisition");
+  expect(db.getTranscript(job.courseId).cues).toEqual(manual);
+});
+
+test("in-app builds edit questions beyond page 1000 and reject inadequate QA reasoning", async () => {
+  const job = jobFor("large-provider-bank");
+  const bank = Array.from({ length: 1001 }, (_, index) => ({ ...fixture, id: `q${index}`, question: `Distinct question ${index}?` }));
+  let turn = 0, rejection = "";
+  await runBuild(job, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
+    fetchResearch,
+    callModel: async (_settings, messages) => {
+      const current = db.getQuestion(job.courseId, "q1000");
+      if (turn++ === 0) return tool("set_course_build_requirements", {});
+      if (turn === 2) return tool("save_course_build", { ...artifacts, questions: bank });
+      if (turn === 3) return tool("upsert_course_question", { question: { ...current!.payload, question: "Updated last question?" }, expectedRevision: current!.revision });
+      if (turn === 4) return tool("get_course_question", { questionId: "q1000" });
+      if (turn === 5) return tool("fetch_url", { url: "https://example.com" });
+      if (turn === 6) return tool("record_question_review", { questionId: "q1000", expectedRevision: current!.revision, review: { contentHash: current!.contentHash, reviewer: "QA", outcome: "reviewed", notes: "x", evidence: ["https://example.com"] } });
+      rejection = JSON.parse(messages.at(-1)?.content ?? "{}").error;
+      return { role: "assistant", content: "Done" };
+    },
+  });
+  expect(job.status).toBe("complete");
+  expect(db.getQuestion(job.courseId, "q1000")?.payload.question).toBe("Updated last question?");
+  expect(db.getQuestion(job.courseId, "q1000")?.qaReview).toBeNull();
+  expect(rejection).toContain("20");
 });
 
 test("in-app staged questions remain out of SQLite until an atomic complete save", async () => {
