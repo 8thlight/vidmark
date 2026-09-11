@@ -6,6 +6,25 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>Vidmark</title>
         <item>
+            <title>1.4.1</title>
+            <pubDate>Fri, 11 Sep 2026 11:13:21 -0400</pubDate>
+            <sparkle:version>10</sparkle:version>
+            <sparkle:shortVersionString>1.4.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Vidmark 1.4.1
+
+- Shows the saved AI provider and model in the sidebar; click it to open Settings.
+- Consolidates provider and model preferences in Settings and removes the Build tab. Start builds from the course overview.
+- Detects signed-in Codex and Claude Code CLIs and supports automatic model selection without a hard-coded model catalog.
+- Adds read-only question fact-checking with evidence and visible review status.
+- Supports reading-based courses, course-specific exams, and optional chapter videos.
+- Protects course edits and transcripts from stale or cancelled agent writes, and preserves complete question banks and review history when sharing.
+- Adds local debug controls and improves agent cancellation, research validation, and preference saving.
+]]></description>
+            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.4.1.dmg" length="41437622" type="application/octet-stream" sparkle:edSignature="G+wrxFjE2DZrTU7MsNkzBgwXj3qQuxwcPA0whmFcmY/GdHlCiGSDMJ++QhDJ4uhPzg6GvaQov9/eRVMKacAbCg=="/>
+        </item>
+        <item>
             <title>1.3.3</title>
             <pubDate>Wed, 09 Sep 2026 22:04:55 -0400</pubDate>
             <sparkle:version>8</sparkle:version>
@@ -40,26 +59,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 ]]></description>
             <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.3.2.dmg" length="41205492" type="application/octet-stream" sparkle:edSignature="azcz9fdCXyUVaZ6sKNnlJlN2uuRTC2L2NCPu+4AUeGUiPdAu/lKEIf+j6OlDglHSfgT4NOqba4HV3YqiUMgqAw=="/>
         </item>
-        <item>
-            <title>1.3.1</title>
-            <pubDate>Fri, 04 Sep 2026 18:26:05 -0400</pubDate>
-            <sparkle:version>6</sparkle:version>
-            <sparkle:shortVersionString>1.3.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Vidmark 1.3.1
-
-- Requires authentication before opening local study data or starting Vidmark's local services.
-- Supports Touch ID or the Mac login password through Apple Local Authentication.
-- Supports a six-digit app PIN stored as a salted, one-way local verifier.
-- Adds manual locking, security settings, and automatic locking when the Mac sleeps or the user session locks.
-- Requires Mac authentication to recover from incomplete or invalid saved security state.
-]]></description>
-            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.3.1.dmg" length="41225935" type="application/octet-stream" sparkle:edSignature="J5MUYeu63z8Y19PemfdFk30FDVdEkW/pXfa6ginAHUv/xIcPbT2rKpNVM3TJDTfpAX46WfwpV495qa5J1qU/CA=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: QFT90H76pGaLenIahfuO/em14n+83i7Fq0eM7ojEXWnnvZtzGzb8Sm/fbsDnQqpINDVgc3Q8NeAzsMHypZ0cCg==
-length: 4052
+edSignature: NES0ITQ4fJK9vxc8L22YSt16RHn4BK81U8resg7N2F7wXLMaMktQzZmGghKAGThS0k+hgmyQHFqRwen9OT6oDQ==
+length: 4349
 -->
