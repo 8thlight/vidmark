@@ -313,6 +313,21 @@ test("the build API exposes cancellation for the in-app provider and stops its H
   } finally { server.stop(true); model.stop(true); }
 });
 
+test("explicit detection refresh bypasses the cache immediately after login changes", async () => {
+  let calls = 0, ready = false;
+  const server = startModelProviderServer(join(root, "discovery-settings.json"), databasePath, join(root, "prompts.json"), 0, { discoverHarness: async id => {
+    calls++; return { id, label: id, status: ready ? "ready" : "signed_out", detail: "Fixture", models: [] };
+  } });
+  const read = async (refresh = false) => (await (await fetch(new URL(`/harnesses${refresh ? "?refresh=true" : ""}`, server.url))).json()).harnesses;
+  try {
+    expect((await read())[0].status).toBe("signed_out");
+    ready = true;
+    expect((await read())[0].status).toBe("signed_out"); expect(calls).toBe(2);
+    expect((await read(true))[0].status).toBe("ready"); expect(calls).toBe(4);
+    expect((await read())[0].status).toBe("ready"); expect(calls).toBe(4);
+  } finally { server.stop(true); }
+});
+
 test("provider CORS follows the configured UI port unless explicitly overridden", async () => {
   const oldPort = process.env.VIDMARK_APP_PORT, oldOrigins = process.env.VIDMARK_ALLOWED_ORIGINS;
   process.env.VIDMARK_APP_PORT = "3011"; delete process.env.VIDMARK_ALLOWED_ORIGINS;

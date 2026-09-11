@@ -78,6 +78,7 @@ export function AgentProviderDialog({ open, onClose }: { open: boolean; onClose:
     if (!open) return;
     let cancelled = false;
     const load = async () => {
+      setPreferencesReady(false);
       const [providerResult, promptResult, agentResult] = await Promise.allSettled([
         fetch(`${PROVIDER_URL}/settings`).then((response) => responseJson<ProviderSettings>(response)),
         getSystemPrompts(),
@@ -123,6 +124,7 @@ export function AgentProviderDialog({ open, onClose }: { open: boolean; onClose:
     finally { setDiscovering(false); window.dispatchEvent(new Event(AGENT_SETTINGS_CHANGED)); }
   };
   const saveAgent = async () => {
+    if (!preferencesReady) throw new Error("Wait for saved agent preferences to load before saving.");
     const saved = await responseJson<AgentPreferences>(await fetch(`${PROVIDER_URL}/agent-settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(agent) }));
     setAgent(saved); window.dispatchEvent(new Event(AGENT_SETTINGS_CHANGED)); return saved;
   };
@@ -188,7 +190,7 @@ export function AgentProviderDialog({ open, onClose }: { open: boolean; onClose:
           <label><span>{settings.provider === "openrouter" ? "OpenRouter API key" : "Host API key · optional"}</span><div className="provider-secret"><KeyRound aria-hidden="true" /><input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={settings.hasApiKey ? "Saved in macOS Keychain · enter to replace" : "Paste API key"} /></div><small>Keys are stored in macOS Keychain and are never written to browser storage.</small></label>
           {settings.provider === "openrouter" && <div className="provider-check"><input id="provider-web-research" type="checkbox" checked={settings.enableWebSearch} onChange={(event) => setSettings((current) => ({ ...current, enableWebSearch: event.target.checked }))} /><label htmlFor="provider-web-research"><b>Allow grounded web research</b><small>Uses OpenRouter’s web-search server tool and may add search charges.</small></label></div>}
         </div>
-        <footer className="agent-provider-actions"><span>Provider connection</span><button type="button" disabled={busy || !settings.model.trim() || (settings.provider === "openrouter" && !apiKey.trim() && !settings.hasApiKey)} onClick={() => void saveAndTest()}>{busy ? <LoaderCircle className="spin" aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />} Save & test</button></footer></>}
+        <footer className="agent-provider-actions"><span>Provider connection</span><button type="button" disabled={busy || !preferencesReady || !settings.model.trim() || (settings.provider === "openrouter" && !apiKey.trim() && !settings.hasApiKey)} onClick={() => void saveAndTest()}>{busy ? <LoaderCircle className="spin" aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />} Save & test</button></footer></>}
       </div>}
     </section>
   </dialog>;

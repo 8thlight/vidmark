@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { AgentPreferences } from "../app/agent-harness";
 import type { QuestionReview } from "../app/question-review";
 import { getSystemPrompt, type SystemPromptOverrides } from "../app/system-prompts";
-import { VidmarkDatabase } from "./vidmark-db";
+import { contentHash, VidmarkDatabase } from "./vidmark-db";
 import { cliEventState, cliResultMessage, courseCliArguments, discoverHarness, resolveAgentModel, runCli } from "./agent-harness";
 import { readSystemPromptOverrides } from "./system-prompt-store";
 import { DebugLog } from "./debug-log";
@@ -68,7 +68,7 @@ export function createQuestionFactCheck(store: VidmarkDatabase, courseId: string
           contentHash: question.contentHash, reviewer, notes: args.reasoning,
           evidence: ids.length ? ids : ["No sufficient source evidence was retrieved."],
           outcome: args.verdict === "accurate" ? "reviewed" : args.verdict === "inaccurate" ? "needs_changes" : "inconclusive",
-        }, via)!.qaReview!;
+        }, via, ids.some(id => id.startsWith(`transcript:${courseId}:`)) ? contentHash({ cues: transcript }) : undefined)!.qaReview!;
         result = { saved: true, review, contentUnchanged: true };
       }
       ensureActive(); onTool(name, true); return result;

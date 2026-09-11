@@ -136,6 +136,14 @@ test("full MCP requires revisions, serializes competing writes and preserves arc
     expect(JSON.stringify(competing)).toContain("Revision conflict");
     const current = service.store.getQuestion(courseId, "q1")!;
     expect(current.revision).toBe(initial.revision + 1);
+    expect(JSON.stringify(await call("archive_course_question", { courseId, questionId: "q1", expectedRevision: initial.revision }))).toContain("Revision conflict");
+    expect(service.store.getQuestion(courseId, "q1")).toEqual(current);
+    const graph = service.store.getConceptGraph(STARTER_COURSE_ID)!.graph;
+    const savedGraph = service.store.saveConceptGraph(courseId, graph);
+    const graphWrites = await Promise.all(["First graph", "Second graph"].map(title => call("upsert_course_concept_graph", { courseId, conceptGraphJson: JSON.stringify({ ...graph, title }), expectedRevision: savedGraph.revision })));
+    expect(graphWrites.filter(result => result.isError)).toHaveLength(1);
+    expect(JSON.stringify(graphWrites)).toContain("Revision conflict");
+    expect(service.store.getConceptGraph(courseId)?.revision).toBe(savedGraph.revision + 1);
     service.store.reviewQuestion(courseId, "q1", current.revision, { contentHash: current.contentHash, reviewer: "Test", outcome: "reviewed", notes: "Test QA preserved on archive.", evidence: ["Test source"] }, "mcp");
     const archived = service.store.archiveQuestion(courseId, "q1", current.revision)!;
     for (const result of [await call("upsert_course_question", { courseId, question: payload, expectedRevision: archived.revision }), await call("patch_course_question", { courseId, questionId: "q1", patchJson: JSON.stringify({ question: "Resurrection" }), expectedRevision: archived.revision })]) {

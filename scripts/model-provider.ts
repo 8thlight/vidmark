@@ -303,7 +303,7 @@ export async function settleAgentTask(pending: Promise<unknown>, job: BuildJob, 
   } finally { cleanup(); }
 }
 
-export function startModelProviderServer(settingsPath: string, databasePath: string, systemPromptsPath = join(dirname(settingsPath), "system-prompts.json"), port = PROVIDER_PORT) {
+export function startModelProviderServer(settingsPath: string, databasePath: string, systemPromptsPath = join(dirname(settingsPath), "system-prompts.json"), port = PROVIDER_PORT, dependencies = { discoverHarness }) {
   const debug = new DebugLog(join(dirname(settingsPath), "Diagnostics"));
   const agentSettingsPath = join(dirname(settingsPath), "agent-settings.json");
   const buildJobs = new Map<string, BuildJob>();
@@ -312,9 +312,9 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
   let discovery: Promise<Awaited<ReturnType<typeof discoverHarness>>[]> | undefined;
   let discoveredAt = 0;
   const harnesses = (refresh: boolean) => {
-    if (!discovery || (Date.now() - discoveredAt > (refresh ? 3000 : 30_000))) {
+    if (!discovery || refresh || Date.now() - discoveredAt > 30_000) {
       discoveredAt = Date.now();
-      discovery = Promise.all([discoverHarness("codex"), discoverHarness("claude")]);
+      discovery = Promise.all([dependencies.discoverHarness("codex"), dependencies.discoverHarness("claude")]);
     }
     return discovery;
   };

@@ -94,6 +94,21 @@ test("a failed single-question write rolls back QA invalidation and course metad
   } finally { db.db.exec("DROP TRIGGER reject_question_write"); }
 });
 
+test("graph and archive writes roll back when the course metadata write fails", () => {
+  const id = "atomic-graph-archive";
+  db.upsertCourse({ id, title: "Atomic", sourceUrl: "https://example.com" });
+  const q = db.upsertQuestion(id, question)!;
+  const graph = db.saveConceptGraph(id, db.getConceptGraph(STARTER_COURSE_ID)!.graph);
+  const before = db.getCourse(id);
+  db.db.exec("CREATE TEMP TRIGGER reject_course_touch BEFORE UPDATE ON courses WHEN NEW.id='atomic-graph-archive' BEGIN SELECT RAISE(ABORT, 'Injected course failure'); END");
+  try {
+    expect(() => db.saveConceptGraph(id, { ...graph.graph, title: "Changed graph" }, graph.revision)).toThrow("Injected course failure");
+    expect(db.getCourse(id)).toEqual(before);
+    expect(() => db.archiveQuestion(id, q.id, q.revision)).toThrow("Injected course failure");
+    expect(db.getCourse(id)).toEqual(before);
+  } finally { db.db.exec("DROP TRIGGER reject_course_touch"); }
+});
+
 test("duplicate question detection normalizes case and whitespace before committing", () => {
   db.upsertCourse({ id: "duplicates", title: "Duplicates", sourceUrl: "https://example.com", studyGuide: "Original" });
   db.setBuildRequirements("duplicates", { questionCount: 2 });

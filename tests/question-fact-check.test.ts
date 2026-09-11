@@ -37,7 +37,27 @@ test("fact checks bind transcript pages to an immutable hashed snapshot", async 
   expect(second.cues).toEqual([{ time: 1, text: "Original continuation" }]);
   expect(first.evidenceId).toMatch(/:[a-f0-9]{64}:0-1$/);
   expect(second.evidenceId.split(":")[2]).toBe(first.evidenceId.split(":")[2]);
+  await expect(session.invoke("record_fact_check", { ...report, evidenceIds: [first.evidenceId] })).rejects.toThrow("Start a new fact-check session");
+  expect(db.getQuestion(q.courseId, q.id)?.qaReview).toBeNull();
   session.close();
+});
+
+test("full-MCP QA rejects stale transcript evidence and permits a fresh review session", async () => {
+  const q = setup("general-transcript-review");
+  db.replaceTranscript(q.courseId, [{ time: 0, text: "Original captions" }]);
+  const reviews = new McpQuestionReviews(db, url => researchFetchResult(url, async () => "Primary evidence"));
+  const start = () => reviews.start(q.courseId, q.id, "External agent", {});
+  try {
+    const first = await start();
+    const evidence = await reviews.evidence(first.reviewSessionId, { type: "transcript", offset: 0, limit: 250 }) as { evidenceId: string };
+    db.replaceTranscript(q.courseId, [{ time: 0, text: "New captions" }]);
+    const payload = { reviewer: "External agent", contentHash: q.contentHash, outcome: "reviewed", notes: report.reasoning, evidence: [evidence.evidenceId] };
+    await expect(reviews.record(first.reviewSessionId, q.courseId, q.id, q.revision, payload)).rejects.toThrow("Transcript changed");
+    expect(db.getQuestion(q.courseId, q.id)?.qaReview).toBeNull();
+    const fresh = await start();
+    const current = await reviews.evidence(fresh.reviewSessionId, { type: "transcript", offset: 0, limit: 250 }) as { evidenceId: string };
+    expect((await reviews.record(fresh.reviewSessionId, q.courseId, q.id, q.revision, { ...payload, evidence: [current.evidenceId] }))?.qaReview?.outcome).toBe("reviewed");
+  } finally { reviews.close(); }
 });
 
 test("full-MCP QA requires a scoped expiring evidence session and cannot approve invented citations", async () => {

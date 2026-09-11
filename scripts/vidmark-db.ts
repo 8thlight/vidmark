@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { buildRequirementsSchema, chapterSchema, questionReviewSchema, transcriptSchema, validateQuestion, type BuildRequirements } from "./course-artifacts";
 import type { QuestionReview } from "../app/question-review";
 
-const contentHash = (payload: Record<string, unknown>) => {
+export const contentHash = (payload: Record<string, unknown>) => {
   const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
   return createHash("sha256").update(JSON.stringify(canonical(payload))).digest("hex");
 };
@@ -458,8 +458,9 @@ export class VidmarkDatabase {
     })();
   }
 
-  reviewQuestion(courseId: string, questionId: string, expectedRevision: number, input: unknown, via: QuestionReview["via"]) {
+  reviewQuestion(courseId: string, questionId: string, expectedRevision: number, input: unknown, via: QuestionReview["via"], expectedTranscriptHash?: string) {
     return this.db.transaction(() => {
+      if (expectedTranscriptHash !== undefined && this.transcriptHash(courseId) !== expectedTranscriptHash) throw new Error("Transcript changed. Start a new fact-check session and retrieve the current evidence.");
       const question = this.getQuestion(courseId, questionId);
       if (question?.archived) throw new Error("Archived questions cannot receive new QA reviews.");
       if (!question || question.revision !== expectedRevision) throw new Error("Question revision changed. Read it again before recording QA.");
@@ -470,7 +471,7 @@ export class VidmarkDatabase {
       this.touchCourse(courseId);
       this.log("review", "question", questionId, { courseId, review, revision: expectedRevision, question: question.payload });
       return this.getQuestion(courseId, questionId);
-    })();
+    }).immediate();
   }
 
   getQuestionReviews(courseId: string, questionId: string): Array<Record<string, unknown> & { recordedAt: number }> {
@@ -538,19 +539,21 @@ export class VidmarkDatabase {
   }
 
   saveConceptGraph(courseId: string, input: unknown, expectedRevision?: number) {
-    if (!this.db.query("SELECT 1 present FROM courses WHERE id=?").get(courseId)) throw new Error(`Course ${courseId} was not found.`);
     const graph = validateConceptGraph(input);
-    const existing = this.getConceptGraph(courseId);
-    if (expectedRevision !== undefined && existing?.revision !== expectedRevision) throw new Error(`Revision conflict: expected ${expectedRevision}, current concept graph revision is ${existing?.revision ?? 0}.`);
-    if (existing && json(existing.graph) === json(graph)) return existing;
-    this.prepareCourseMutation(courseId);
-    const timestamp = now();
-    this.db.query(`INSERT INTO concept_graphs(course_id,schema_version,payload_json,revision,created_at,updated_at) VALUES (?,?,?,1,?,?)
-      ON CONFLICT(course_id) DO UPDATE SET schema_version=excluded.schema_version,payload_json=excluded.payload_json,revision=concept_graphs.revision+1,updated_at=excluded.updated_at`)
-      .run(courseId, String(graph.schemaVersion ?? "1.0.0"), json(graph), existing?.createdAt ?? timestamp, timestamp);
-    this.touchCourse(courseId);
-    this.log("upsert", "concept_graph", courseId, { revision: (existing?.revision ?? 0) + 1, nodes: graph.nodes.length, edges: graph.edges.length });
-    return this.getConceptGraph(courseId)!;
+    return this.db.transaction(() => {
+      if (!this.db.query("SELECT 1 present FROM courses WHERE id=?").get(courseId)) throw new Error(`Course ${courseId} was not found.`);
+      const existing = this.getConceptGraph(courseId);
+      if (expectedRevision !== undefined && existing?.revision !== expectedRevision) throw new Error(`Revision conflict: expected ${expectedRevision}, current concept graph revision is ${existing?.revision ?? 0}.`);
+      if (existing && json(existing.graph) === json(graph)) return existing;
+      this.prepareCourseMutation(courseId);
+      const timestamp = now();
+      this.db.query(`INSERT INTO concept_graphs(course_id,schema_version,payload_json,revision,created_at,updated_at) VALUES (?,?,?,1,?,?)
+        ON CONFLICT(course_id) DO UPDATE SET schema_version=excluded.schema_version,payload_json=excluded.payload_json,revision=concept_graphs.revision+1,updated_at=excluded.updated_at`)
+        .run(courseId, String(graph.schemaVersion ?? "1.0.0"), json(graph), existing?.createdAt ?? timestamp, timestamp);
+      this.touchCourse(courseId);
+      this.log("upsert", "concept_graph", courseId, { revision: (existing?.revision ?? 0) + 1, nodes: graph.nodes.length, edges: graph.edges.length });
+      return this.getConceptGraph(courseId)!;
+    }).immediate();
   }
 
   transcriptHash(courseId: string) {
@@ -686,14 +689,16 @@ export class VidmarkDatabase {
   }
 
   archiveQuestion(courseId: string, questionId: string, expectedRevision?: number) {
-    const existing = this.getQuestion(courseId, questionId);
-    if (!existing) throw new Error(`Question ${questionId} was not found.`);
-    if (expectedRevision !== undefined && existing.revision !== expectedRevision) throw new Error(`Revision conflict: expected ${expectedRevision}, current revision is ${existing.revision}.`);
-    this.prepareCourseMutation(courseId);
-    this.db.query("UPDATE questions SET archived=1,revision=revision+1,updated_at=? WHERE course_id=? AND id=?").run(now(), courseId, questionId);
-    this.touchCourse(courseId);
-    this.log("archive", "question", questionId, { courseId });
-    return this.getQuestion(courseId, questionId);
+    return this.db.transaction(() => {
+      const existing = this.getQuestion(courseId, questionId);
+      if (!existing) throw new Error(`Question ${questionId} was not found.`);
+      if (expectedRevision !== undefined && existing.revision !== expectedRevision) throw new Error(`Revision conflict: expected ${expectedRevision}, current revision is ${existing.revision}.`);
+      this.prepareCourseMutation(courseId);
+      this.db.query("UPDATE questions SET archived=1,revision=revision+1,updated_at=? WHERE course_id=? AND id=?").run(now(), courseId, questionId);
+      this.touchCourse(courseId);
+      this.log("archive", "question", questionId, { courseId });
+      return this.getQuestion(courseId, questionId);
+    }).immediate();
   }
 
   createSuggestion(input: Omit<SuggestionRecord, "id" | "status" | "createdAt" | "updatedAt"> & { id?: string; status?: SuggestionRecord["status"]; notify?: boolean }) {
