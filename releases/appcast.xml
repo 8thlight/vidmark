@@ -6,6 +6,22 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>Vidmark</title>
         <item>
+            <title>1.4.2</title>
+            <pubDate>Fri, 11 Sep 2026 11:57:40 -0400</pubDate>
+            <sparkle:version>11</sparkle:version>
+            <sparkle:shortVersionString>1.4.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Vidmark 1.4.2
+
+- Fixes provider names and status text that were difficult to read in dark mode.
+- Uses a white OpenAI logo in dark mode while preserving Claude's brand color.
+- Makes selected provider cards follow the current theme, including the in-app agent icon.
+- Retains the selection border and keyboard focus indicator in both themes.
+]]></description>
+            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.4.2.dmg" length="41440318" type="application/octet-stream" sparkle:edSignature="rXbWV0uakGM54Ayc6opSt2NP3OOr0pkyhUpiPJ+DIRBGMyTXs/v85lAJfCO8orrkLbRJEAXKgTWbrFhR1RKNDQ=="/>
+        </item>
+        <item>
             <title>1.4.1</title>
             <pubDate>Fri, 11 Sep 2026 11:13:21 -0400</pubDate>
             <sparkle:version>10</sparkle:version>
@@ -41,27 +57,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 ]]></description>
             <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.3.3.dmg" length="41439475" type="application/octet-stream" sparkle:edSignature="Xti0Pasf20M3JsjkUsMzvLCr0tWBPt82s+hudamAVkpMKd63+eebbfp20nZctr2WA3jxyjspYeaNyCkQVnVJCA=="/>
         </item>
-        <item>
-            <title>1.3.2</title>
-            <pubDate>Wed, 09 Sep 2026 21:51:22 -0400</pubDate>
-            <sparkle:version>7</sparkle:version>
-            <sparkle:shortVersionString>1.3.2</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Vidmark 1.3.2
-
-- Keeps Vidmark locked if authentication finishes after a sleep or lock event.
-- Discards pending workspace and notification responses from a previous unlocked session.
-- Requires authentication before changing the unlock method and handles malformed PIN settings through Mac authentication recovery.
-- Preserves notification destinations until Vidmark is unlocked.
-- Waits for local services to stop before reopening the workspace.
-- Explains how to unlock Vidmark when Claude Desktop cannot connect.
-]]></description>
-            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.3.2.dmg" length="41205492" type="application/octet-stream" sparkle:edSignature="azcz9fdCXyUVaZ6sKNnlJlN2uuRTC2L2NCPu+4AUeGUiPdAu/lKEIf+j6OlDglHSfgT4NOqba4HV3YqiUMgqAw=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: NES0ITQ4fJK9vxc8L22YSt16RHn4BK81U8resg7N2F7wXLMaMktQzZmGghKAGThS0k+hgmyQHFqRwen9OT6oDQ==
-length: 4349
+edSignature: fKUQfK+1lAjqBYnf+uTtsrqRdIZcaGeGlKILSLOGJSp2GZyNGuOj1mKAkat191KvIcr2kaP1TZOrKSsSWHJQBQ==
+length: 4175
 -->
