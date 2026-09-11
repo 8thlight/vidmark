@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { VidmarkDatabase } from "../scripts/vidmark-db";
+import { VidmarkDatabase, STARTER_COURSE_ID } from "../scripts/vidmark-db";
 import { researchFetchResult } from "../scripts/research-fetch-result";
-import { startVidmarkMcpServer } from "../scripts/vidmark-mcp";
+import { startVidmarkMcpServer, MCP_VERSION } from "../scripts/vidmark-mcp";
 import { createAgentTaskPoller } from "../app/agent-task-polling";
 
 test("stale browser snapshots cannot erase acquired transcripts or newer course content", () => {
@@ -108,6 +108,41 @@ test("general MCP caption acquisition also guards concurrent imports", async () 
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result)).toContain("Transcript changed during acquisition");
     expect(service.store.getTranscript("race").cues).toEqual(manual);
+  } finally { service.stop(true); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("full MCP requires revisions, serializes competing writes and preserves archived QA", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vidmark-full-mcp-mutations-"));
+  const service = await startVidmarkMcpServer(join(dir, "test.sqlite"), { port: 0 });
+  const rpc = async (method: string, params: unknown) => {
+    const response = await fetch(new URL("/mcp", service.server.url), { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: crypto.randomUUID(), method, params }) });
+    const text = await response.text();
+    return JSON.parse(text.split("\n").find(line => line.startsWith("data: "))?.slice(6) ?? text).result;
+  };
+  const call = (name: string, args: unknown) => rpc("tools/call", { name, arguments: args });
+  try {
+    const initialized = await rpc("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "regression", version: "1" } });
+    const health = await (await fetch(new URL("/health", service.server.url))).json();
+    expect(initialized.serverInfo.version).toBe(MCP_VERSION); expect(health.version).toBe(MCP_VERSION);
+    const courseId = "mutations";
+    service.store.upsertCourse({ id: courseId, title: "Mutations", sourceUrl: "https://example.com" });
+    const payload = { ...service.store.listQuestions(STARTER_COURSE_ID, { limit: 1 }).questions[0]!.payload, id: "q1" };
+    expect((await call("upsert_course_question", { courseId, question: payload })).isError).not.toBe(true);
+    const initial = service.store.getQuestion(courseId, "q1")!;
+    expect(JSON.stringify(await call("upsert_course_question", { courseId, question: { ...payload, question: "Missing revision" } }))).toContain("expectedRevision is required");
+    expect(service.store.getQuestion(courseId, "q1")).toEqual(initial);
+    const competing = await Promise.all(["First edit", "Second edit"].map(question => call("upsert_course_question", { courseId, question: { ...payload, question }, expectedRevision: initial.revision })));
+    expect(competing.filter(result => result.isError)).toHaveLength(1);
+    expect(JSON.stringify(competing)).toContain("Revision conflict");
+    const current = service.store.getQuestion(courseId, "q1")!;
+    expect(current.revision).toBe(initial.revision + 1);
+    service.store.reviewQuestion(courseId, "q1", current.revision, { contentHash: current.contentHash, reviewer: "Test", outcome: "reviewed", notes: "Test QA preserved on archive.", evidence: ["Test source"] }, "mcp");
+    const archived = service.store.archiveQuestion(courseId, "q1", current.revision)!;
+    for (const result of [await call("upsert_course_question", { courseId, question: payload, expectedRevision: archived.revision }), await call("patch_course_question", { courseId, questionId: "q1", patchJson: JSON.stringify({ question: "Resurrection" }), expectedRevision: archived.revision })]) {
+      expect(result.isError).toBe(true); expect(JSON.stringify(result)).toContain("Archived questions cannot be edited");
+    }
+    expect(service.store.getQuestion(courseId, "q1")).toEqual(archived);
+    expect(service.store.getQuestion(courseId, "q1")?.qaReview?.outcome).toBe("reviewed");
   } finally { service.stop(true); rmSync(dir, { recursive: true, force: true }); }
 });
 

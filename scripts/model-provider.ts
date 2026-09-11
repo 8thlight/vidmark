@@ -246,6 +246,7 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
             result = specialist.content ?? "The specialist returned no text.";
             debug.outcome(job.id, "run_subagent", Boolean(specialist.content), createHash("sha256").update(String(result)).digest("hex"));
           } else if (call.function.name === "save_course_build") {
+            if (typeof args.studyGuide !== "string" || !args.studyGuide.trim() || typeof args.researchNotes !== "string" || !args.researchNotes.trim()) throw new Error("studyGuide and researchNotes must both be non-empty strings. No artifacts saved.");
             const chapters = Array.isArray(args.chapters) ? args.chapters : [];
             const questions = args.questions === undefined ? [...stagedQuestions.values()] : Array.isArray(args.questions) ? args.questions : [];
             if (course.videoUrl && !store.getTranscript(String(course.id)).cues.length) throw new Error("Acquire the video transcript before authoring artifacts.");
@@ -253,7 +254,7 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
             if (!chapters.length || !questions.length) throw new Error("The agent tried to save an empty chapter or question collection.");
             if (!conceptGraph) throw new Error("The agent tried to save a course without its concept graph.");
             try {
-              result = store.saveCourseBuild(String(course.id), { studyGuide: String(args.studyGuide ?? ""), researchNotes: String(args.researchNotes ?? "") + "\n\nRetrieval manifest (fetch success is not factual QA):\n" + JSON.stringify(sourceEvidence, null, 2), chapters, questions, conceptGraph });
+              result = store.saveCourseBuild(String(course.id), { studyGuide: args.studyGuide, researchNotes: args.researchNotes + "\n\nRetrieval manifest (fetch success is not factual QA):\n" + JSON.stringify(sourceEvidence, null, 2), chapters, questions, conceptGraph });
             } catch (error) {
               result = { saved: false, validationError: error instanceof Error ? error.message : "Invalid artifacts", guidance: "Nothing was saved. Correct the JSON to match the tool schema and recorded requirements; do not fabricate evidence." };
               messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
@@ -333,7 +334,7 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
       const host = request.headers.get("host")?.split(":")[0];
       if (host !== "127.0.0.1" && host !== "localhost") return Response.json({ error: "Invalid Host header." }, { status: 403, headers });
       const origin = request.headers.get("origin");
-      if (origin && origin !== headers["Access-Control-Allow-Origin"]) return Response.json({ error: "Origin not allowed." }, { status: 403 });
+      if (origin !== null && origin !== headers["Access-Control-Allow-Origin"]) return Response.json({ error: "Origin not allowed." }, { status: 403 });
       if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
       try {
         if (request.method === "GET" && url.pathname === "/harnesses") return Response.json({ harnesses: await harnesses(url.searchParams.get("refresh") === "true") }, { headers });

@@ -10,6 +10,7 @@ import { ExamMode } from "./exam-mode";
 import { courseDomains } from "./exam-store";
 import { syncMcpState, TranscriptCue, VIDMARK_MCP_URL } from "./mcp-sync";
 import { CourseAgentBuild, QuestionFactCheck } from "./agent-task";
+import { mergeQuestionReviewState } from "./question-review";
 import { NoteSession } from "./note-session";
 import { readNotes, StudyNote } from "./notes-store";
 import { VoiceNote, VoiceNotePlaylist } from "./voice-note";
@@ -640,7 +641,11 @@ export default function Home() {
                   {selectedChoice !== activeQuestion.correct && <div className="miss-label">Miss type: {activeQuestion.missType === "recall" ? "documentation recall" : "architecture judgment"}</div>}
                   {activeQuestion.sourceUrl ? <a href={activeQuestion.sourceUrl} target="_blank" rel="noreferrer">{activeQuestion.sourceLabel} ↗</a> : <span>{activeQuestion.sourceLabel}</span>}
                 </div>}
-                <QuestionFactCheck key={`${activeVideo.id}:${activeQuestion.bankId}:${activeQuestion.contentHash}`} courseId={activeVideo.id} questionId={activeQuestion.bankId} contentHash={activeQuestion.contentHash ?? ""} review={activeQuestion.qaReview} />
+                <QuestionFactCheck key={`${activeVideo.id}:${activeQuestion.bankId}:${activeQuestion.contentHash}`} courseId={activeVideo.id} questionId={activeQuestion.bankId} contentHash={activeQuestion.contentHash ?? ""} review={activeQuestion.qaReview} onComplete={async () => {
+                  const courseId = activeVideo.id;
+                  const latest = await getCourseQuestions(courseId, questionBank);
+                  setBankState(current => current.courseId === courseId ? { ...current, questions: mergeQuestionReviewState(current.questions, latest) } : current);
+                }} />
                 <button className="primary-action" disabled={!selectedChoice && !helpMode} onClick={nextQuestion}>{questionIndex === practiceQuestions.length - 1 ? "See final breakdown" : "Next question"}</button>
               </section>
             )}

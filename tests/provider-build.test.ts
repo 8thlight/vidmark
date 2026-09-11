@@ -74,6 +74,27 @@ test("model failure during optional QA does not mark persisted artifacts as a fa
   expect(db.getCourse(job.courseId)?.questions.length).toBe(1);
 });
 
+test("in-app builds reject missing, blank and non-string study artifacts before saving", async () => {
+  for (const field of ["studyGuide", "researchNotes"] as const) for (const value of [undefined, "   ", 42, {}]) {
+    const job = jobFor(`invalid-${field}-${JSON.stringify(value)}`);
+    const before = db.getCourse(job.courseId);
+    const results: unknown[] = [];
+    let turn = 0;
+    await runBuild(job, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
+      fetchResearch,
+      callModel: async (_settings, messages) => {
+        if (messages.at(-1)?.role === "tool") results.push(JSON.parse(messages.at(-1)?.content ?? "{}"));
+        if (turn++ === 0) return tool("set_course_build_requirements", { questionCount: 1 });
+        if (turn === 2) return tool("save_course_build", { ...artifacts, [field]: value });
+        return { role: "assistant", content: "Done" };
+      },
+    });
+    expect(results[1]).toMatchObject({ error: expect.stringContaining("non-empty strings") });
+    expect(job.status).toBe("failed");
+    expect(db.getCourse(job.courseId)).toEqual(before);
+  }
+});
+
 test("in-app update builds can read every existing artifact and the saved question bank in bounded pages", async () => {
   const job = jobFor("read-existing");
   db.setBuildRequirements(job.courseId, { questionCount: 1 });
@@ -297,6 +318,12 @@ test("provider CORS follows the configured UI port unless explicitly overridden"
   process.env.VIDMARK_APP_PORT = "3011"; delete process.env.VIDMARK_ALLOWED_ORIGINS;
   const server = startModelProviderServer(join(root, "cors-settings.json"), databasePath, join(root, "prompts.json"), 0);
   try {
+    for (const origin of ["", "null", "https://attacker.example"]) for (const path of ["/settings", "/agent-settings", "/build", "/fact-check"]) {
+      const response = await fetch(new URL(path, server.url), { method: "POST", headers: { Origin: origin, "Content-Type": "text/plain" }, body: "{}" });
+      expect(response.status).toBe(403);
+      expect(response.headers.has("access-control-allow-origin")).toBe(false);
+      expect((await fetch(new URL(path, server.url), { method: "OPTIONS", headers: { Origin: origin } })).status).toBe(403);
+    }
     expect((await fetch(new URL("/settings", server.url), { headers: { Origin: "http://localhost:3011" } })).status).toBe(200);
     expect((await fetch(new URL("/settings", server.url), { headers: { Origin: "http://localhost:3010" } })).status).toBe(403);
     process.env.VIDMARK_ALLOWED_ORIGINS = "http://localhost:3999";

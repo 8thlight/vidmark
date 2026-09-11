@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,6 +53,45 @@ test("QA asterisks reflect exact content, persist across restart, and return aft
   expect(db.getQuestionReviews("quality", "q1")[0]?.review).toMatchObject({ outcome: "reviewed", reviewer: "Connected agent" });
   expect(() => db.patchQuestion("quality", "q1", { correctAnswer: "Z" }, changed.revision, true)).toThrow();
   expect(db.getQuestion("quality", "q1")?.revision).toBe(changed.revision);
+});
+
+test("large-bank QA counts cover all active rows and question reads batch their reviews", () => {
+  const id = "large-qa-count";
+  db.upsertCourse({ id, title: "Large", sourceUrl: "https://example.com" });
+  const bank = Array.from({ length: 1002 }, (_, i) => ({ ...question, id: `q${i}`, question: `Question ${i}?` }));
+  db.replaceQuestions(id, bank);
+  for (const index of [0, 1000]) {
+    const q = db.getQuestion(id, `q${index}`)!;
+    db.reviewQuestion(id, q.id, q.revision, { ...review, contentHash: q.contentHash }, "mcp");
+  }
+  db.archiveQuestion(id, "q1001");
+  expect(db.saveCourseBuild(id, { studyGuide: "Updated guide" }).unreviewed).toBe(999);
+  for (const field of ["studyGuide", "researchNotes"] as const) {
+    expect(() => db.saveCourseBuild(id, { [field]: "  " })).toThrow("non-empty string");
+  }
+  const query = spyOn(db.db, "query");
+  try {
+    const listed = db.listQuestions(id, { limit: 1000 });
+    expect(listed.total).toBe(1001); expect(listed.questions[0]?.qaReview?.outcome).toBe("reviewed");
+    expect(query).toHaveBeenCalledTimes(2);
+    query.mockClear();
+    db.replaceQuestions(id, bank.slice(0, 1001));
+    expect(query.mock.calls.filter(([sql]) => /^SELECT .*FROM question_reviews/i.test(String(sql)))).toHaveLength(0);
+    expect(db.getQuestion(id, "q1000")?.qaReview?.outcome).toBe("reviewed");
+  } finally { query.mockRestore(); }
+});
+
+test("a failed single-question write rolls back QA invalidation and course metadata", () => {
+  const id = "atomic-question-write";
+  db.upsertCourse({ id, title: "Atomic", sourceUrl: "https://example.com" });
+  const initial = db.upsertQuestion(id, question)!;
+  db.reviewQuestion(id, initial.id, initial.revision, { ...review, contentHash: initial.contentHash }, "mcp");
+  const before = db.getCourse(id);
+  db.db.exec("CREATE TEMP TRIGGER reject_question_write BEFORE UPDATE ON questions WHEN NEW.course_id='atomic-question-write' BEGIN SELECT RAISE(ABORT, 'Injected storage failure'); END");
+  try {
+    expect(() => db.upsertQuestion(id, { ...question, question: "Changed" }, initial.revision)).toThrow("Injected storage failure");
+    expect(db.getCourse(id)).toEqual(before);
+  } finally { db.db.exec("DROP TRIGGER reject_question_write"); }
 });
 
 test("duplicate question detection normalizes case and whitespace before committing", () => {
