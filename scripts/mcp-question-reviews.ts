@@ -4,6 +4,9 @@ import { createQuestionFactCheck } from "./question-fact-check";
 import { researchFetchResult } from "./research-fetch-result";
 import { safeFetchUrl } from "./research-fetch";
 import { VidmarkDatabase } from "./vidmark-db";
+import * as z from "zod";
+
+export const mcpQuestionReviewSchema = questionReviewSchema.extend({ notes: z.string().trim().min(20).max(12000), evidence: z.array(z.string().trim().min(1)).min(1).max(30) });
 
 type Entry = {
   courseId: string; questionId: string; revision: number; contentHash: string; reviewer: string; expiresAt: number;
@@ -44,7 +47,7 @@ export class McpQuestionReviews {
   }
   async record(id: string, courseId: string, questionId: string, revision: number, input: unknown) {
     const entry = this.get(id);
-    const review = questionReviewSchema.parse(input);
+    const review = mcpQuestionReviewSchema.parse(input);
     if (entry.courseId !== courseId || entry.questionId !== questionId || entry.revision !== revision || entry.contentHash !== review.contentHash || entry.reviewer !== review.reviewer) throw new Error("Review does not match this session's question, revision, hash or reviewer.");
     const missing = review.outcome === "inconclusive" && review.evidence.length === 1 && review.evidence[0] === "No sufficient source evidence was retrieved.";
     await entry.session.invoke("record_fact_check", { verdict: review.outcome === "reviewed" ? "accurate" : review.outcome === "needs_changes" ? "inaccurate" : "uncertain", reasoning: review.notes, evidenceIds: missing ? [] : review.evidence });

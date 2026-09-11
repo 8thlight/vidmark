@@ -10,7 +10,7 @@ import { AgentProviderDialog } from "../app/agent-provider";
 import { CourseAgentBuild } from "../app/agent-task";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import { McpQuestionReviews } from "../scripts/mcp-question-reviews";
+import { McpQuestionReviews, mcpQuestionReviewSchema } from "../scripts/mcp-question-reviews";
 import { researchFetchResult } from "../scripts/research-fetch-result";
 
 const root = await mkdtemp(join(tmpdir(), "vidmark-fact-check-tests-"));
@@ -50,6 +50,9 @@ test("full-MCP QA requires a scoped expiring evidence session and cannot approve
     await expect(reviews.record("unknown", q.courseId, q.id, q.revision, payload)).rejects.toThrow("not found");
     await expect(reviews.record(begun.reviewSessionId, q.courseId, q.id, q.revision, payload)).rejects.toThrow("successfully retrieved");
     await reviews.evidence(begun.reviewSessionId, { type: "url", url: "https://example.com" });
+    expect(mcpQuestionReviewSchema.safeParse({ ...payload, notes: "Too short" }).success).toBe(false);
+    expect(mcpQuestionReviewSchema.safeParse({ ...payload, evidence: Array(31).fill("https://example.com") }).success).toBe(false);
+    await expect(reviews.record(begun.reviewSessionId, q.courseId, q.id, q.revision, { ...payload, notes: "Too short" })).rejects.toThrow();
     await expect(reviews.record(begun.reviewSessionId, "another-course", q.id, q.revision, payload)).rejects.toThrow("does not match");
     expect((await reviews.record(begun.reviewSessionId, q.courseId, q.id, q.revision, payload))?.qaReview?.outcome).toBe("reviewed");
     await expect(reviews.record(begun.reviewSessionId, q.courseId, q.id, q.revision, payload)).rejects.toThrow("not found");

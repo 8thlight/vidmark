@@ -97,7 +97,8 @@ test("course sharing preserves archived state and readable QA history without du
 });
 
 test("build QA requires reading the exact saved version and retrieving its cited evidence", () => {
-  const ledger = new CourseReviewEvidence();
+  let transcript = [{ time: 0, text: "Original evidence" }, { time: 1, text: "Continuation" }];
+  const ledger = new CourseReviewEvidence(() => transcript);
   const saved = db.getQuestion("quality", "q1")!;
   const input = { ...review, contentHash: saved.contentHash };
   expect(() => ledger.validate(saved.id, saved.revision, input)).toThrow("Read this exact");
@@ -113,10 +114,54 @@ test("build QA requires reading the exact saved version and retrieving its cited
   const noEvidence = { ...input, outcome: "inconclusive", evidence: ["No sufficient source evidence was retrieved."] };
   expect(ledger.validate(saved.id, saved.revision, noEvidence).outcome).toBe("inconclusive");
   expect(() => ledger.validate(saved.id, saved.revision, { ...noEvidence, outcome: "reviewed" })).toThrow();
-  const empty = ledger.transcript("quality", 0, 0);
+  const empty = ledger.transcript("quality", [], 0, 0);
   expect(() => ledger.validate(saved.id, saved.revision, { ...input, evidence: [empty] })).toThrow();
-  const evidenceId = ledger.transcript("quality", 0, 2);
+  const evidenceId = ledger.transcript("quality", transcript, 0, 2);
+  expect(evidenceId).toMatch(/:[a-f0-9]{64}:0-2$/);
   expect(ledger.validate(saved.id, saved.revision, { ...input, evidence: [evidenceId] }).outcome).toBe("reviewed");
+  transcript = [{ time: 0, text: "Replaced evidence" }];
+  expect(() => ledger.validate(saved.id, saved.revision, { ...input, evidence: [evidenceId] })).toThrow("Transcript evidence changed");
+  const refreshed = ledger.transcript("quality", transcript, 0, 1);
+  expect(ledger.validate(saved.id, saved.revision, { ...input, evidence: [refreshed] }).outcome).toBe("reviewed");
+  expect(() => ledger.readQuestion({ ...saved, archived: true })).toThrow("Archived");
+});
+
+test("complete rebuilds preserve archived rows and history, and discard orphaned current QA", () => {
+  const id = "rebuild-archives";
+  db.upsertCourse({ id, title: "Rebuild", sourceUrl: "https://example.com" });
+  db.setBuildRequirements(id, { questionCount: 1 });
+  db.replaceChapters(id, [chapter]);
+  const bank = Array.from({ length: 1002 }, (_, index) => ({ ...question, id: `q${index}`, question: `Question ${index}?` }));
+  db.replaceQuestions(id, bank);
+  for (const questionId of ["q0", "q1", "q1001"]) {
+    const q = db.getQuestion(id, questionId)!;
+    db.reviewQuestion(id, questionId, q.revision, { ...review, contentHash: q.contentHash }, "mcp");
+  }
+  db.archiveQuestion(id, "q1001");
+  const archived = db.getQuestion(id, "q1001")!;
+  const history = db.getQuestionReviews(id, "q1001");
+  db.saveCourseBuild(id, { questions: [bank[0]] });
+  expect(db.getQuestion(id, "q1001")).toEqual(archived);
+  expect(db.getQuestionReviews(id, "q1001")).toEqual(history);
+  expect(db.getQuestion(id, "q0")?.qaReview?.outcome).toBe("reviewed");
+  expect(db.getQuestion(id, "q1")).toBeNull();
+  expect(db.db.query("SELECT * FROM question_reviews WHERE course_id=? AND question_id='q1'").get(id)).toBeNull();
+  db.upsertQuestion(id, bank[1]);
+  expect(db.getQuestion(id, "q1")?.qaReview).toBeNull();
+  expect(db.getQuestionReviews(id, "q1")).toHaveLength(1);
+  expect(() => db.saveCourseBuild(id, { questions: [bank[1001]], studyGuide: "Must roll back" })).toThrow("archived");
+  expect(db.getCourse(id)?.studyGuide).not.toBe("Must roll back");
+  expect(() => db.reviewQuestion(id, archived.id, archived.revision, { ...review, contentHash: archived.contentHash }, "mcp")).toThrow("Archived");
+});
+
+test("video reference validation uses the greatest cue time, not transcript order", () => {
+  const id = "unordered-transcript";
+  db.upsertCourse({ id, title: "Video", videoUrl: "https://youtu.be/o3CX_Y59_74" });
+  db.replaceTranscript(id, [{ time: 100, text: "Later cue" }, { time: 0, text: "First cue" }]);
+  db.setBuildRequirements(id, { questionCount: 1 });
+  const build = { chapters: [chapter], questions: [{ ...question, videoReferences: [{ timestampSeconds: 90, label: "Evidence" }] }] };
+  expect(db.saveCourseBuild(id, build).questions).toBe(1);
+  expect(() => db.saveCourseBuild(id, { ...build, questions: [{ ...build.questions[0], videoReferences: [{ timestampSeconds: 131, label: "Outside" }] }] })).toThrow("outside");
 });
 
 test("exam QA refresh preserves frozen questions and ignores reviews for different content", () => {

@@ -49,6 +49,11 @@ Before and after review, both questions retained revision 1 and the same content
 - Imports retain archived flags and record shared QA in the history endpoint without duplicate-import entries.
 - Fact checks read a hash-bound transcript snapshot; build/discovery cancellation reaches login/catalog subprocesses and caption requests.
 - Transcript UI derives from the refreshed active course. The copied external handoff explicitly identifies its trusted, full-library scope.
+- Complete rebuilds retain archived records and their QA history, reject reuse of archived IDs, and remove orphaned current-review rows for omitted active questions. A regression covers archives beyond the first 1,000 records.
+- Build-time transcript evidence IDs include the content hash; replacing captions requires a fresh read before QA. Archived questions cannot receive new reviews through either build runtime or the shared database operation.
+- Fact-check CLI launches disable native search and delegation so evidence is retrieved through the four scoped review tools; course builds retain search/delegation. Claude execution remains fixture-verified only.
+- In-app update builds can page through all saved guides, research notes, chapters, graphs and active questions. Source lookup cancellation also works during a stalled DNS response.
+- Full-MCP review schemas and runtime agree on reasoning length and evidence limits. Video reference validation accepts unordered transcripts using their greatest cue timestamp.
 - Workflow integration verification passes: SQLite artifacts, transcript retention, 48 full-library MCP tools, local coordinator and shared course import.
 - Production frontend build and native arm64 server compilation pass; changed-file lint and whitespace checks pass.
 - Whole-repo TypeScript checking still reports existing errors in the D1 example, worker platform types and the packaged-lifecycle stream test.

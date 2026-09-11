@@ -224,18 +224,19 @@ export function resolveAgentModel(explicit: string, harness: HarnessStatus) {
   return modelId.parse(explicit || harness.models.find(model => model.isDefault)?.id || "");
 }
 
-export function courseCliArguments(id: CliHarness, model: string, mcpUrl: string, toolNames: readonly string[] = courseAgentToolNames) {
+export function courseCliArguments(id: CliHarness, model: string, mcpUrl: string, toolNames: readonly string[] = courseAgentToolNames, mode: "build" | "fact-check" = "build") {
   modelId.parse(model);
   const url = new URL(mcpUrl);
   if (url.protocol !== "http:" || url.hostname !== "127.0.0.1") throw new Error("Course agents require a loopback MCP endpoint.");
   if (id === "codex") return ["exec", "--ignore-user-config", "--skip-git-repo-check", "--ephemeral", "--json", "--color", "never", "--sandbox", "read-only",
-    "-c", "approval_policy=\"never\"", "-c", "features.shell_tool=false", "-c", "web_search=\"live\"",
+    "-c", "approval_policy=\"never\"", "-c", "features.shell_tool=false", "-c", `web_search=${JSON.stringify(mode === "build" ? "live" : "disabled")}`,
+    ...(mode === "fact-check" ? ["-c", "features.multi_agent=false", "-c", "features.multi_agent_v2=false"] : []),
     "-c", `mcp_servers.vidmark.url=${JSON.stringify(mcpUrl)}`, "-c", "mcp_servers.vidmark.required=true",
     ...toolNames.filter(tool => /^[a-z_]+$/.test(tool)).flatMap(tool => ["-c", `mcp_servers.vidmark.tools.${tool}.approval_mode="approve"`]),
     ...(model ? ["--model", model] : []), "-"];
   return ["-p", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--settings", '{"disableAllHooks":true}',
     "--mcp-config", JSON.stringify({ mcpServers: { vidmark: { type: "http", url: mcpUrl } } }),
-    "--tools", "Agent,WebSearch", "--allowedTools", "mcp__vidmark__*,Agent,WebSearch", "--permission-mode", "dontAsk", "--max-turns", "100",
+    "--tools", mode === "build" ? "Agent,WebSearch" : "", "--allowedTools", mode === "build" ? "mcp__vidmark__*,Agent,WebSearch" : toolNames.map(tool => `mcp__vidmark__${tool}`).join(","), "--permission-mode", "dontAsk", "--max-turns", "100",
     ...(model ? ["--model", model] : [])];
 }
 

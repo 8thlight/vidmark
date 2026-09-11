@@ -67,3 +67,20 @@ test("pinned transport enforces declared and streaming byte limits, Host and can
     await expect(requestPinned(url("/slow"), "127.0.0.1", AbortSignal.timeout(30))).rejects.toThrow();
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
+
+test("research cancellation and deadlines stop awaiting stalled DNS, including late rejection", async () => {
+  for (const deadline of [false, true]) {
+    const controller = new AbortController();
+    let rejectLookup!: (error: Error) => void;
+    let connections = 0;
+    const pending = safeFetchUrl("https://example.com", deadline ? AbortSignal.timeout(20) : controller.signal, {
+      lookup: () => new Promise((_resolve, reject) => { rejectLookup = reject; }),
+      requestPinned: async () => { connections++; return { status: 200, headers: {}, text: "Must not connect" }; },
+    });
+    if (!deadline) controller.abort(new Error("Cancelled during DNS"));
+    await expect(pending).rejects.toThrow();
+    rejectLookup(new Error("Late resolver error"));
+    await Promise.resolve();
+    expect(connections).toBe(0);
+  }
+});

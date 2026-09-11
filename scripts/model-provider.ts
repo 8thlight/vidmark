@@ -112,12 +112,17 @@ const updateJob = (job: BuildJob, phase: string, message: string) => {
   Object.assign(job, { phase, message, status: "running" as const, updatedAt: Date.now() });
 };
 
+const artifactPageSchema = z.object({ artifact: z.enum(["studyGuide", "researchNotes", "chapters", "conceptGraph"]), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(12000).default(12000) });
+const questionPageSchema = z.object({ offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(100).default(20) });
+
 const localTools = [
   { type: "function", function: { name: "set_course_build_requirements", description: "Record the user's requested quantity and chapter coverage before authoring. Omit quantity only when none was requested.", parameters: z.toJSONSchema(buildRequirementsSchema) } },
   { type: "function", function: { name: "get_course_question", description: "Read a saved question and its current revision before QA.", parameters: { type: "object", properties: { questionId: { type: "string" } }, required: ["questionId"] } } },
   { type: "function", function: { name: "upsert_course_question", description: "Before the first complete save, stage questions without changing the library. Commit staged questions by omitting questions in save_course_build. After saving, only exact-revision edits of active questions are allowed. Save a single schema-valid question incrementally. Does not mark the whole build complete.", parameters: { type: "object", properties: { question: z.toJSONSchema(questionSchema), expectedRevision: { type: "integer" } }, required: ["question"] } } },
   { type: "function", function: { name: "record_question_review", description: "Optionally record QA of an exact saved question revision after inspecting original evidence. Not required to save.", parameters: { type: "object", properties: { questionId: { type: "string" }, expectedRevision: { type: "integer" }, review: z.toJSONSchema(questionReviewSchema) }, required: ["questionId", "expectedRevision", "review"] } } },
   { type: "function", function: { name: "get_course", description: "Read the selected course metadata and existing generated artifacts.", parameters: { type: "object", properties: {}, additionalProperties: false } } },
+  { type: "function", function: { name: "get_course_artifact", description: "Read a saved artifact as paginated JSON text before updating a course. Concatenate content pages until nextOffset is null, then parse JSON. The revision identifies changes between pages; restart reading if it changes.", parameters: z.toJSONSchema(artifactPageSchema) } },
+  { type: "function", function: { name: "list_course_questions", description: "Read the active saved question bank in pages before updating a course. Use get_course_question for an exact question read before QA.", parameters: z.toJSONSchema(questionPageSchema) } },
   { type: "function", function: { name: "get_transcript", description: "Read timestamped transcript cues in bounded pages.", parameters: { type: "object", properties: { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 500 } }, required: ["offset", "limit"], additionalProperties: false } } },
   { type: "function", function: { name: "acquire_course_transcript", description: "Retrieve the selected course video's public YouTube caption track, preserve timestamps, and save it locally. Call this when get_transcript reports zero cues.", parameters: { type: "object", properties: { preferredLanguage: { type: "string", description: "Preferred BCP 47 language code, such as en or es." } }, additionalProperties: false } } },
   { type: "function", function: { name: "fetch_url", description: "Fetch an authoritative HTTP(S) documentation page for verification. Supply the exact primary-source URL.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false } } },
@@ -129,7 +134,7 @@ const localTools = [
 export const runBuild = async (job: BuildJob, settings: ProviderSettings, databasePath: string, systemPromptsPath: string, debug: DebugLog, signal: AbortSignal, dependencies = { callModel, fetchResearch: (url: string, signal: AbortSignal) => researchFetchResult(url, value => safeFetchUrl(value, signal)) }) => {
   debug.record("build.started");
   const store = new VidmarkDatabase(databasePath);
-  const reviewEvidence = new CourseReviewEvidence();
+  const reviewEvidence = new CourseReviewEvidence(id => store.getTranscript(id, undefined, 100000).cues);
   const stagedQuestions = new Map<string, ReturnType<typeof validateQuestion>>();
   let saved = false;
   try {
@@ -197,13 +202,21 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
             result = store.reviewQuestion(String(course.id), questionId, revision, reviewEvidence.validate(questionId, revision, args.review), "local-model");
           } else if (call.function.name === "get_course") {
             Object.assign(course, store.getCourse(job.courseId));
-            result = { id: course.id, title: course.title, sourceUrl: course.sourceUrl, videoUrl: course.videoUrl, coursePrompt: course.coursePrompt, promptCredit: course.promptCredit, transcriptCues: course.transcript.length, buildRequirements: store.getBuildRequirements(String(course.id)), existing: { chapters: course.chapters?.length ?? 0, questions: course.questions?.length ?? 0, hasStudyGuide: Boolean(course.studyGuide) } };
+            result = { id: course.id, title: course.title, sourceUrl: course.sourceUrl, videoUrl: course.videoUrl, coursePrompt: course.coursePrompt, promptCredit: course.promptCredit, transcriptCues: course.transcript.length, buildRequirements: store.getBuildRequirements(String(course.id)), existing: { chapters: course.chapters?.length ?? 0, questions: store.listQuestions(job.courseId).total, hasStudyGuide: Boolean(course.studyGuide) }, readArtifacts: { tool: "get_course_artifact", artifacts: artifactPageSchema.shape.artifact.options }, readQuestions: "list_course_questions" };
+          } else if (call.function.name === "get_course_artifact") {
+            const { artifact, offset, limit } = artifactPageSchema.parse(args);
+            const current = store.getCourse(job.courseId)!;
+            const content = JSON.stringify(current[artifact]);
+            const page = content.slice(offset, offset + limit);
+            result = { artifact, revision: current.revision, encoding: "json", offset, total: content.length, content: page, nextOffset: offset + page.length < content.length ? offset + page.length : null };
+          } else if (call.function.name === "list_course_questions") {
+            result = store.listQuestions(job.courseId, questionPageSchema.parse(args));
           } else if (call.function.name === "get_transcript") {
             const offset = Math.max(0, Number(args.offset ?? 0));
             const limit = Math.min(500, Math.max(1, Number(args.limit ?? 250)));
             const transcript = store.getCourse(job.courseId)?.transcript ?? [];
             const cues = transcript.slice(offset, offset + limit);
-            result = { offset, total: transcript.length, cues, evidenceId: reviewEvidence.transcript(job.courseId, offset, cues.length) };
+            result = { offset, total: transcript.length, cues, evidenceId: reviewEvidence.transcript(job.courseId, transcript, offset, cues.length) };
           } else if (call.function.name === "acquire_course_transcript") {
             if (!course.videoUrl) { messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: "Non-video course: read sourceUrl with fetch_url instead. No transcript is required." }) }); continue; }
             updateJob(job, "Acquiring transcript", "Retrieving the video's public timestamped YouTube captions.");

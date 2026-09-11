@@ -56,6 +56,9 @@ const toolText = (result: Record<string, unknown>) => {
 try {
   await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "vidmark-agent-verifier", version: "1.0.0" } });
   const tools = await request("tools/list");
+  const reviewTool = (tools.tools as Array<{ name: string; inputSchema: { properties: { review?: { properties: { notes: { minLength: number; maxLength: number }; evidence: { maxItems: number } } } } } }>).find(tool => tool.name === "record_question_review");
+  const reviewSchema = reviewTool?.inputSchema.properties.review?.properties;
+  if (reviewSchema?.notes.minLength !== 20 || reviewSchema.notes.maxLength !== 12000 || reviewSchema.evidence.maxItems !== 30) throw new Error("The advertised QA schema does not match the fact-check runtime contract.");
   const toolNames = new Set((tools.tools as Array<{ name: string }>).map((tool) => tool.name));
   for (const required of ["upsert_course", "replace_transcript", "acquire_course_transcript", "save_course_build", "share_course_with_user", "review_course_invite"]) {
     if (!toolNames.has(required)) throw new Error(`Required MCP tool ${required} is missing.`);
@@ -94,6 +97,8 @@ try {
   const evidence = toolText(await request("tools/call", { name: "get_question_review_evidence", arguments: { reviewSessionId: reviewSession.reviewSessionId, source: { type: "transcript" } } }));
   const unverified = await request("tools/call", { name: "record_question_review", arguments: { courseId, questionId: initialQuestion.id, expectedRevision: initialQuestion.revision, review: { contentHash: initialQuestion.contentHash, reviewer: "MCP acceptance verifier", outcome: "reviewed", notes: "Unverified evidence must be rejected.", evidence: ["Fabricated"] } } });
   if (!unverified.isError) throw new Error("General MCP accepted a review without an evidence session.");
+  const shortReview = await request("tools/call", { name: "record_question_review", arguments: { reviewSessionId: reviewSession.reviewSessionId, courseId, questionId: initialQuestion.id, expectedRevision: initialQuestion.revision, review: { contentHash: initialQuestion.contentHash, reviewer: "MCP acceptance verifier", outcome: "reviewed", notes: "Too short", evidence: [evidence.evidenceId] } } });
+  if (!shortReview.isError) throw new Error("General MCP accepted reasoning shorter than its advertised minimum.");
   const reviewResult = await request("tools/call", { name: "record_question_review", arguments: { reviewSessionId: reviewSession.reviewSessionId, courseId, questionId: initialQuestion.id, expectedRevision: initialQuestion.revision, review: { contentHash: initialQuestion.contentHash, reviewer: "MCP acceptance verifier", outcome: "reviewed", notes: "Checked all options against the test transcript.", evidence: [evidence.evidenceId] } } });
   if (reviewResult.isError || service.store.getQuestion(courseId, initialQuestion.id)?.qaReview?.outcome !== "reviewed") throw new Error("MCP QA did not persist.");
   const history = toolText(await request("tools/call", { name: "get_question_reviews", arguments: { courseId, questionId: initialQuestion.id } }));

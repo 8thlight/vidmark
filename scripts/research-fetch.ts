@@ -55,6 +55,17 @@ export function requestPinned(url: URL, address: string, signal: AbortSignal): P
   });
 }
 
+// node:dns lookup itself is not abortable. Stop awaiting it immediately on
+// cancellation, and handle late completion/rejection without leaking listeners.
+function abortableLookup<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => { signal.removeEventListener("abort", abort); reject(signal.reason); };
+    signal.addEventListener("abort", abort, { once: true });
+    pending.then(value => { signal.removeEventListener("abort", abort); resolve(value); }, error => { signal.removeEventListener("abort", abort); reject(error); });
+    if (signal.aborted) abort();
+  });
+}
+
 export async function safeFetchUrl(rawUrl: string, signal?: AbortSignal, dependencies = { lookup: (hostname: string) => lookup(hostname, { all: true }), requestPinned }) {
   const timed = AbortSignal.timeout(20_000);
   const active = signal ? AbortSignal.any([signal, timed]) : timed;
@@ -64,7 +75,7 @@ export async function safeFetchUrl(rawUrl: string, signal?: AbortSignal, depende
     if (!webUrl(url.href)) throw new Error("Documentation URLs must use HTTP(S) without credentials.");
     const hostname = url.hostname.replace(/^\[|\]$/g, "");
     if (hostname === "localhost" || hostname.endsWith(".local")) throw new Error("Documentation fetches cannot target local services.");
-    const addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await dependencies.lookup(hostname);
+    const addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await abortableLookup(dependencies.lookup(hostname), active);
     active.throwIfAborted();
     if (!addresses.length || addresses.some(({ address }) => !isPublicAddress(address))) throw new Error("Documentation fetches cannot target private or reserved networks.");
     // Prefer IPv4 on dual-stack hosts: many desktop networks publish AAAA

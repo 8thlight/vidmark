@@ -17,7 +17,7 @@ export function createCourseAgentSession(store: VidmarkDatabase, courseId: strin
   if (!course) throw new Error("Course not found.");
   let active = true, saved = false;
   const stagedQuestions = new Map<string, ReturnType<typeof validateQuestion>>();
-  const evidence = new CourseReviewEvidence();
+  const evidence = new CourseReviewEvidence(id => store.getTranscript(id, undefined, 100000).cues);
   const token = crypto.randomUUID();
   const ensureActive = () => { signal?.throwIfAborted(); if (!active) throw new Error("This course build has ended."); };
   const prompt = `Current date: ${new Date().toISOString().slice(0, 10)}.\n\n${composeCourseBuildPrompt(String(course.title), courseId, String(course.coursePrompt), String(course.promptCredit), getSystemPrompt("courseBuilderMaster", overrides))}\n\n${getSystemPrompt("artifactContract", overrides)}\n\n${getSystemPrompt("cliCoordinator", overrides)}`;
@@ -37,7 +37,7 @@ export function createCourseAgentSession(store: VidmarkDatabase, courseId: strin
     tool("get_transcript", "Read timestamped transcript pages. Continue until offset + cues.length reaches total.", { ...scope, offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(1000).default(250) }, ({ offset, limit }) => {
       const cues = store.getTranscript(courseId, undefined, 100000).cues;
       const page = cues.slice(offset, offset + limit);
-      return { total: cues.length, offset, cues: page, evidenceId: evidence.transcript(courseId, offset, page.length) };
+      return { total: cues.length, offset, cues: page, evidenceId: evidence.transcript(courseId, cues, offset, page.length) };
     });
     tool("acquire_course_transcript", "Acquire authorized public YouTube captions when the course has no transcript. Never fabricates missing captions.", scope, async () => {
       if (!course.videoUrl) throw new Error("This reading-based course does not need a transcript. Read sourceUrl instead.");

@@ -88,6 +88,22 @@ test("launch arguments isolate config, never bypass permissions, and pass the se
   }
 });
 
+test("fact-check CLI launches disable native search and delegation, retaining only review MCP tools", () => {
+  const names = ["get_course_question", "get_transcript", "fetch_url", "record_fact_check"];
+  const url = "http://127.0.0.1:1234/mcp/check";
+  const codex = courseCliArguments("codex", "", url, names, "fact-check");
+  expect(codex).toContain('web_search="disabled"');
+  expect(codex).toContain("features.multi_agent=false");
+  expect(codex).toContain("features.multi_agent_v2=false");
+  expect(codex.filter(a => a.endsWith('.approval_mode="approve"'))).toHaveLength(4);
+  expect(courseCliArguments("codex", "", url)).toContain('web_search="live"');
+  const claude = courseCliArguments("claude", "", url, names, "fact-check");
+  expect(claude[claude.indexOf("--tools") + 1]).toBe("");
+  expect(claude[claude.indexOf("--allowedTools") + 1]).toBe(names.map(n => `mcp__vidmark__${n}`).join(","));
+  expect(claude.join(" ")).not.toMatch(/Agent|WebSearch/);
+  expect(courseCliArguments("claude", "", url)).toContain("Agent,WebSearch");
+});
+
 test("capability detection propagates cancellation through login, help and model discovery", async () => {
   for (const stage of ["login", "help", "models"]) {
     const controller = new AbortController();
@@ -149,6 +165,8 @@ test("scoped question edits preserve archived questions and review history; QA c
     db.archiveQuestion(id, archived.id);
     const before = db.getQuestion(id, archived.id);
     const history = db.getQuestionReviews(id, archived.id);
+    expect((await call("get_course_question", { questionId: archived.id })).isError).toBe(true);
+    expect((await call("record_question_review", { questionId: archived.id, expectedRevision: before!.revision, review: { reviewer: "Agent", outcome: "inconclusive", notes: "No evidence", evidence: ["No sufficient source evidence was retrieved."], contentHash: before!.contentHash } })).isError).toBe(true);
     const current = db.getQuestion(id, "q1")!;
     expect((await call("upsert_course_question", { question: { ...fixture, question: "Updated question?" }, expectedRevision: current.revision })).isError).not.toBe(true);
     expect(db.getQuestion(id, archived.id)).toEqual(before);
@@ -161,6 +179,27 @@ test("scoped question edits preserve archived questions and review history; QA c
     await call("fetch_url", { url: "https://example.com" });
     expect((await call("record_question_review", input)).isError).not.toBe(true);
     expect(db.getQuestion(id, "q1")?.qaReview?.outcome).toBe("reviewed");
+  } finally { session.close(); }
+});
+
+test("scoped build MCP rejects transcript evidence replaced after the agent read it", async () => {
+  const id = "build-transcript-evidence";
+  makeCourse(id);
+  db.replaceQuestions(id, [fixture]);
+  db.replaceTranscript(id, [{ time: 0, text: "Original evidence" }]);
+  const session = createCourseAgentSession(db, id, {}, async () => ({}), () => {});
+  const call = (name: string, args: Record<string, unknown>) => rpc(session.url, "tools/call", { name, arguments: { courseId: id, ...args } });
+  try {
+    await call("get_course_question", { questionId: "q1" });
+    const page = JSON.parse((await call("get_transcript", {})).content[0].text);
+    db.replaceTranscript(id, [{ time: 0, text: "Different source" }]);
+    const q = db.getQuestion(id, "q1")!;
+    const args = { questionId: "q1", expectedRevision: q.revision, review: { reviewer: "Agent", outcome: "reviewed", notes: "Read source", evidence: [page.evidenceId], contentHash: q.contentHash } };
+    const rejected = await call("record_question_review", args);
+    expect(rejected.isError).toBe(true);
+    expect(rejected.content[0].text).toContain("Transcript evidence changed");
+    const current = JSON.parse((await call("get_transcript", {})).content[0].text);
+    expect((await call("record_question_review", { ...args, review: { ...args.review, evidence: [current.evidenceId] } })).isError).not.toBe(true);
   } finally { session.close(); }
 });
 

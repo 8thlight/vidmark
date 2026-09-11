@@ -432,10 +432,10 @@ export class VidmarkDatabase {
         if (new Set(questions.map(q => q.id)).size !== questions.length) throw new Error("Question IDs must be unique.");
         if (new Set(questions.map(q => q.question.toLowerCase().replace(/\s+/g, " ").trim())).size !== questions.length) throw new Error("Duplicate question text.");
         const chapterIds = new Set((chapters ?? course.chapters).map(c => String(c.id)));
+        const lastCue = (course.transcript as Array<{ time: number }>).reduce<number | undefined>((latest, cue) => Math.max(latest ?? 0, cue.time), undefined);
         for (const q of questions) {
           if (!chapterIds.has(q.sectionId)) throw new Error(`Question ${q.id} references an unknown chapter.`);
           if (!q.sources.length && !q.videoReferences.length) throw new Error(`Question ${q.id} requires source or transcript evidence.`);
-          const lastCue = (course.transcript as Array<{ time: number }>).at(-1)?.time;
           if (q.videoReferences.length && (!course.videoUrl || lastCue === undefined)) throw new Error("Video references require an acquired transcript.");
           if (q.videoReferences.some(ref => ref.timestampSeconds > Number(lastCue) + 30)) throw new Error(`Question ${q.id} has a timestamp outside the transcript.`);
         }
@@ -459,6 +459,7 @@ export class VidmarkDatabase {
   reviewQuestion(courseId: string, questionId: string, expectedRevision: number, input: unknown, via: QuestionReview["via"]) {
     return this.db.transaction(() => {
       const question = this.getQuestion(courseId, questionId);
+      if (question?.archived) throw new Error("Archived questions cannot receive new QA reviews.");
       if (!question || question.revision !== expectedRevision) throw new Error("Question revision changed. Read it again before recording QA.");
       const checked = questionReviewSchema.parse(input);
       if (checked.contentHash !== contentHash(question.payload)) throw new Error("Question content changed. Read it again before recording QA.");
@@ -595,23 +596,30 @@ export class VidmarkDatabase {
       .map((row) => ({ ...parseJson<Record<string, unknown>>(row.payload_json, {}), id: row.id, position: row.position, revision: row.revision, updatedAt: row.updated_at }));
   }
 
-  replaceQuestions(courseId: string, questions: unknown[]) {
+  replaceQuestions(courseId: string, questions: unknown[], options: { importing?: boolean } = {}) {
     questions = questions.map(validateQuestion);
     if (new Set(questions.map(q => (q as { id: string }).id)).size !== questions.length) throw new Error("Question IDs must be unique.");
-    this.prepareCourseMutation(courseId);
     const timestamp = now();
-    const prior = new Map(this.listQuestions(courseId, { limit: 1000, includeArchived: true }).questions.map(q => [q.id, q]));
     this.db.transaction(() => {
-      this.db.query("DELETE FROM questions WHERE course_id=?").run(courseId);
+      const rows = this.db.query("SELECT * FROM questions WHERE course_id=?").all(courseId) as Array<Record<string, unknown>>;
+      const prior = new Map(rows.map(row => { const q = this.questionFromRow(row); return [q.id, q]; }));
+      if (!options.importing && questions.some(q => prior.get((q as { id: string }).id)?.archived)) throw new Error("A build cannot replace archived question IDs. Use new IDs for new questions.");
+      this.prepareCourseMutation(courseId);
+      // Rebuilding replaces the active bank only. Archived rows retain their
+      // exact revision, payload and QA; an explicit course import may replace
+      // incoming archived IDs and restores their shared state below.
+      this.db.query("DELETE FROM questions WHERE course_id=? AND archived=0").run(courseId);
       const insert = this.db.query("INSERT INTO questions(course_id,id,position,payload_json,revision,archived,created_at,updated_at) VALUES (?,?,?,?,1,0,?,?)");
       questions.forEach((question, index) => {
         const value = question && typeof question === "object" ? question as Record<string, unknown> : { value: question };
         const id = String(value.id ?? value.bankId ?? `question-${index + 1}`);
         const previous = prior.get(id);
+        if (options.importing && previous?.archived) this.db.query("DELETE FROM questions WHERE course_id=? AND id=?").run(courseId, id);
         if (!previous || contentHash(previous.payload) !== contentHash(value)) this.db.query("DELETE FROM question_reviews WHERE course_id=? AND question_id=?").run(courseId, id);
         insert.run(courseId, id, index, json(value), previous?.createdAt ?? timestamp, timestamp);
         if (previous) this.db.query("UPDATE questions SET revision=? WHERE course_id=? AND id=?").run(previous.revision + 1, courseId, id);
       });
+      this.db.query("DELETE FROM question_reviews WHERE course_id=? AND NOT EXISTS (SELECT 1 FROM questions WHERE questions.course_id=question_reviews.course_id AND questions.id=question_reviews.question_id)").run(courseId);
       this.touchCourse(courseId);
     })();
   }
@@ -751,7 +759,7 @@ export class VidmarkDatabase {
     const saved = this.upsertCourse({ id, title: String(course.title ?? `Course · ${id}`), source: String(course.source ?? "YouTube"), sourceUrl: String(course.sourceUrl ?? course.videoUrl ?? ""), videoUrl: String(course.videoUrl ?? (!course.sourceUrl && youtubeId(String(course.videoId ?? id)) ? `https://www.youtube.com/watch?v=${course.videoId ?? id}` : "")), originPrompt: String(course.coursePrompt ?? course.originPrompt ?? "Build a well-researched course from this video."), promptCredit: String(course.promptCredit ?? "Course creator"), studyGuide: course.studyGuide === undefined ? undefined : String(course.studyGuide ?? ""), researchNotes: course.researchNotes === undefined ? undefined : String(course.researchNotes ?? ""), active: true });
     if (Array.isArray(course.transcript)) this.replaceTranscript(id, course.transcript as Array<{ time: number; text: string }>);
     if (Array.isArray(course.chapters)) this.replaceChapters(id, course.chapters);
-    if (questions.length) this.replaceQuestions(id, questions);
+    if (questions.length) this.replaceQuestions(id, questions, { importing: true });
     // Shared QA is an attributed report, never a fresh local verification.
     for (const item of Array.isArray(course.questions) ? course.questions : []) {
       if (!item || typeof item !== "object") continue;

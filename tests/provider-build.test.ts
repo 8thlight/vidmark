@@ -74,6 +74,60 @@ test("model failure during optional QA does not mark persisted artifacts as a fa
   expect(db.getCourse(job.courseId)?.questions.length).toBe(1);
 });
 
+test("in-app update builds can read every existing artifact and the saved question bank in bounded pages", async () => {
+  const job = jobFor("read-existing");
+  db.setBuildRequirements(job.courseId, { questionCount: 1 });
+  db.saveCourseBuild(job.courseId, artifacts);
+  const original = db.getCourse(job.courseId)!;
+  const results: Array<Record<string, unknown>> = [];
+  const names = ["studyGuide", "researchNotes", "chapters", "conceptGraph"] as const;
+  let turn = 0;
+  await runBuild(job, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
+    fetchResearch,
+    callModel: async (_settings, messages, tools) => {
+      expect(JSON.stringify(tools)).toContain("get_course_artifact");
+      expect(JSON.stringify(tools)).toContain("list_course_questions");
+      const last = messages.at(-1);
+      if (last?.role === "tool") results.push(JSON.parse(last.content ?? "{}"));
+      const calls = [tool("get_course", {}), ...names.map(artifact => tool("get_course_artifact", { artifact })), tool("get_course_artifact", { artifact: "studyGuide", offset: 2, limit: 3 }), tool("list_course_questions", { offset: 0, limit: 1 })];
+      if (turn < calls.length) return calls[turn++];
+      throw new Error("Inspection done without replacement");
+    },
+  });
+  expect(results[0].readQuestions).toBe("list_course_questions");
+  names.forEach((name, index) => expect(JSON.parse(String(results[index + 1].content))).toEqual(original[name]));
+  expect(results[5]).toMatchObject({ offset: 2, content: JSON.stringify(original.studyGuide).slice(2, 5), nextOffset: 5 });
+  expect(results[6]).toMatchObject({ total: 1, returned: 1, questions: [expect.objectContaining({ payload: fixture })] });
+  expect(db.getCourse(job.courseId)).toEqual(original);
+});
+
+test("in-app build QA rejects a previously retrieved transcript after replacement", async () => {
+  const job = jobFor("provider-transcript-hash");
+  db.setBuildRequirements(job.courseId, { questionCount: 1 });
+  db.saveCourseBuild(job.courseId, artifacts);
+  db.replaceTranscript(job.courseId, [{ time: 0, text: "Original" }]);
+  const q = db.getQuestion(job.courseId, "q1")!;
+  let turn = 0;
+  let evidenceId = "";
+  await runBuild(job, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
+    fetchResearch,
+    callModel: async (_settings, messages) => {
+      if (turn++ === 0) return tool("get_course_question", { questionId: "q1" });
+      if (turn === 2) return tool("get_transcript", { offset: 0, limit: 1 });
+      const last = JSON.parse(messages.at(-1)?.content ?? "{}");
+      if (turn === 3) {
+        evidenceId = last.evidenceId;
+        db.replaceTranscript(job.courseId, [{ time: 0, text: "Changed" }]);
+        return tool("record_question_review", { questionId: "q1", expectedRevision: q.revision, review: { reviewer: "Agent", notes: "Checked", outcome: "reviewed", contentHash: q.contentHash, evidence: [evidenceId] } });
+      }
+      expect(last.error).toContain("Transcript evidence changed");
+      throw new Error("Test complete");
+    },
+  });
+  expect(evidenceId).toMatch(/:[a-f0-9]{64}:0-1$/);
+  expect(db.getQuestion(job.courseId, "q1")?.qaReview).toBeNull();
+});
+
 test("in-app staged questions remain out of SQLite until an atomic complete save", async () => {
   for (const finish of ["save", "fail", "cancel"] as const) {
     const job = jobFor("staging-" + finish);

@@ -121,7 +121,7 @@ export async function runQuestionFactCheck(job: FactCheckJob, preferences: Agent
       server = serveQuestionFactCheck(session);
       workspace = await mkdtemp(join(tmpdir(), "vidmark-fact-check-"));
       let terminal: string | undefined;
-      const result = await dependencies.runCli(harness!.executable!, courseCliArguments(id, model, server.url, factCheckToolNames), { cwd: workspace, input: session.prompt, timeoutMs: 15 * 60_000, signal, onLine: line => {
+      const result = await dependencies.runCli(harness!.executable!, courseCliArguments(id, model, server.url, factCheckToolNames, "fact-check"), { cwd: workspace, input: session.prompt, timeoutMs: 15 * 60_000, signal, onLine: line => {
         const state = cliEventState(id, line);
         if (state === "complete" || state === "failed") terminal = state;
         const message = cliResultMessage(id, line); if (message) job.agentMessage = message;
