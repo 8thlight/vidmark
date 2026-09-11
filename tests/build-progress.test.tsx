@@ -102,8 +102,9 @@ test("progress UI distinguishes reported positions, staged drafts and saved coun
   const progress: BuildProgress = { activity: { label: "Agent-reported work", chapter: report.chapter, question: report.question }, report, stagedQuestions: 3, savedChapters: 0, savedQuestions: 0, questionTarget: 30, saved: false };
   const html = renderToStaticMarkup(<BuildProgressView progress={progress} running agentMessage="Public update" />);
   expect(html).toContain("Chapter 2 of 10"); expect(html).toContain("Question 4 of 30"); expect(html).toContain("3 / 30"); expect(html).toContain("0 / 30"); expect(html).toContain("Latest agent response"); expect(html).not.toContain("%");
+  expect(html).toContain('aria-live="polite"'); expect(html).toContain("Staged questions stay out of your library");
   const unknown = renderToStaticMarkup(<BuildProgressView progress={{ ...progress, questionTarget: undefined, activity: undefined, report: undefined }} running={false} />);
-  expect(unknown).not.toContain(" / "); expect(unknown).toContain("Staged drafts are not retained");
+  expect(unknown).not.toContain(" / "); expect(unknown).toContain("No completed course was saved"); expect(unknown).toContain("Staged drafts are not retained");
 });
 
 test("progress instructions are visible and overridable for both coordinator types", () => {
@@ -111,4 +112,12 @@ test("progress instructions are visible and overridable for both coordinator typ
     expect(getSystemPrompt(id)).toContain("report_build_progress");
     expect(getSystemPrompt(id, { [id]: "My custom coordinator" })).toBe("My custom coordinator");
   }
+});
+
+test("opt-in diagnostics recognize progress calls without storing reported content", () => {
+  const debug = new DebugLog(join(root, "progress-diagnostics"));
+  debug.setEnabled(true);
+  debug.record("tool.finished", 1, 12, "report_build_progress");
+  expect(debug.entries().at(-1)).toMatchObject({ event: "tool.finished", tool: "report_build_progress", turn: 1, durationMs: 12 });
+  expect(Object.keys(debug.entries().at(-1)).sort()).toEqual(["durationMs", "event", "time", "tool", "turn"]);
 });

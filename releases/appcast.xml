@@ -19,7 +19,7 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 - Displays Claude's public live responses without exposing thinking or tool payloads.
 - Keeps incomplete drafts distinct from successful saves, including after cancellation or validation errors.
 ]]></description>
-            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.4.4.dmg" length="41791915" type="application/octet-stream" sparkle:edSignature="2Y7bva3rPsR/6jUIJ8/sZmzc8n3I+W4AQ7J9EGmV3UsgX+jd+lfIaSQbR/6mDtUjOJHYJ6epnxIlcggHASspAg=="/>
+            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.4.4.dmg" length="41790839" type="application/octet-stream" sparkle:edSignature="3g1Nme5wdBqcYgPlSIxuBgKQMcPVkeSGqoBzN3fi8/mwG35beUihUQK+B159WiFiUGFF5nITqCxP6qTk+qLeCA=="/>
         </item>
         <item>
             <title>1.4.3</title>
@@ -56,6 +56,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: 60tNkMaVlmTcnjKjC08iodSCzQEyIaLx7PB9tUWj7weJpU2Ic2TQXTH9C5aGTbu7LG5tvUFojsXrF1AZJzFMDw==
+edSignature: wgmhktrl/VM/mk1xwPLqxzsCmR/8QuLNrRz0G+R3bOd8oVLhr+ku9Adb3cRanwnYVNqC7CFTWOFQcjbmc0JWDA==
 length: 3918
 -->

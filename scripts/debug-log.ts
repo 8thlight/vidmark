@@ -24,7 +24,7 @@ export class DebugLog {
     try {
       mkdirSync(this.directory, { recursive: true, mode: 0o700 });
       if (existsSync(this.path) && statSync(this.path).size > 1_000_000) renameSync(this.path, `${this.path}.previous`);
-      const safeTool = tool && ["get_course", "get_transcript", "acquire_course_transcript", "fetch_url", "run_subagent", "save_course_build", "set_course_build_requirements", "get_course_question", "upsert_course_question", "record_question_review", "record_fact_check"].includes(tool) ? tool : undefined;
+      const safeTool = tool && ["get_course", "get_transcript", "acquire_course_transcript", "fetch_url", "run_subagent", "report_build_progress", "save_course_build", "set_course_build_requirements", "get_course_question", "upsert_course_question", "record_question_review", "record_fact_check"].includes(tool) ? tool : undefined;
       appendFileSync(this.path, JSON.stringify({ time: new Date().toISOString(), event, ...(turn === undefined ? {} : { turn }), ...(durationMs === undefined ? {} : { durationMs }), ...(safeTool ? { tool: safeTool } : {}) }) + "\n", { mode: 0o600 });
     } catch { /* Diagnostics must not interrupt a course build. */ }
   }
