@@ -6,6 +6,22 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>Vidmark</title>
         <item>
+            <title>1.4.4</title>
+            <pubDate>Fri, 11 Sep 2026 12:42:19 -0400</pubDate>
+            <sparkle:version>13</sparkle:version>
+            <sparkle:shortVersionString>1.4.4</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Vidmark 1.4.4
+
+- Shows chapter and question activity, public agent updates, and separate staged and saved counts during app-started course builds.
+- Adds a display-only progress tool for Codex, Claude, and in-app coordinators. Progress instructions remain locally customizable.
+- Displays Claude's public live responses without exposing thinking or tool payloads.
+- Keeps incomplete drafts distinct from successful saves, including after cancellation or validation errors.
+]]></description>
+            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.4.4.dmg" length="41791915" type="application/octet-stream" sparkle:edSignature="2Y7bva3rPsR/6jUIJ8/sZmzc8n3I+W4AQ7J9EGmV3UsgX+jd+lfIaSQbR/6mDtUjOJHYJ6epnxIlcggHASspAg=="/>
+        </item>
+        <item>
             <title>1.4.3</title>
             <pubDate>Fri, 11 Sep 2026 12:13:06 -0400</pubDate>
             <sparkle:version>12</sparkle:version>
@@ -37,28 +53,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 ]]></description>
             <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.4.2.dmg" length="41440318" type="application/octet-stream" sparkle:edSignature="rXbWV0uakGM54Ayc6opSt2NP3OOr0pkyhUpiPJ+DIRBGMyTXs/v85lAJfCO8orrkLbRJEAXKgTWbrFhR1RKNDQ=="/>
         </item>
-        <item>
-            <title>1.4.1</title>
-            <pubDate>Fri, 11 Sep 2026 11:13:21 -0400</pubDate>
-            <sparkle:version>10</sparkle:version>
-            <sparkle:shortVersionString>1.4.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Vidmark 1.4.1
-
-- Shows the saved AI provider and model in the sidebar; click it to open Settings.
-- Consolidates provider and model preferences in Settings and removes the Build tab. Start builds from the course overview.
-- Detects signed-in Codex and Claude Code CLIs and supports automatic model selection without a hard-coded model catalog.
-- Adds read-only question fact-checking with evidence and visible review status.
-- Supports reading-based courses, course-specific exams, and optional chapter videos.
-- Protects course edits and transcripts from stale or cancelled agent writes, and preserves complete question banks and review history when sharing.
-- Adds local debug controls and improves agent cancellation, research validation, and preference saving.
-]]></description>
-            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.4.1.dmg" length="41437622" type="application/octet-stream" sparkle:edSignature="G+wrxFjE2DZrTU7MsNkzBgwXj3qQuxwcPA0whmFcmY/GdHlCiGSDMJ++QhDJ4uhPzg6GvaQov9/eRVMKacAbCg=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: 5XdU0aLVZDG72Cp/JW4SgUvLfLP41HT7nGHE6XyFLhteuk9ok8SRXI3h70n+RkGP58fGE5cyWaqRRYyoZLBcCw==
-length: 4210
+edSignature: 60tNkMaVlmTcnjKjC08iodSCzQEyIaLx7PB9tUWj7weJpU2Ic2TQXTH9C5aGTbu7LG5tvUFojsXrF1AZJzFMDw==
+length: 3918
 -->

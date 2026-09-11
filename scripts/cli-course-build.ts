@@ -7,8 +7,9 @@ import { createCourseAgentSession } from "./course-agent-session";
 import { VidmarkDatabase } from "./vidmark-db";
 import { readSystemPromptOverrides } from "./system-prompt-store";
 import { DebugLog } from "./debug-log";
+import type { BuildProgress } from "../app/build-progress";
 
-export type BuildJob = { id: string; courseId: string; harness?: AgentHarness; status: "queued" | "running" | "complete" | "failed"; phase: string; message: string; agentMessage?: string; startedAt: number; updatedAt: number; error?: string; transcriptCues?: number };
+export type BuildJob = { id: string; courseId: string; harness?: AgentHarness; status: "queued" | "running" | "complete" | "failed"; phase: string; message: string; agentMessage?: string; progress?: BuildProgress; startedAt: number; updatedAt: number; error?: string; transcriptCues?: number };
 
 export async function runCliCourseBuild(job: BuildJob, preferences: AgentPreferences, databasePath: string, systemPromptsPath: string, debug: DebugLog, signal: AbortSignal, fetchResearch: (url: string) => Promise<unknown>, dependencies = { discoverHarness, runCli }) {
   const id = preferences.harness;
@@ -30,7 +31,7 @@ export async function runCliCourseBuild(job: BuildJob, preferences: AgentPrefere
       if (tool === "save_course_build") debug.outcome(job.id, "save_course_build", ok);
       update(ok ? "Agent working" : "Agent correcting a tool request", `${harness.label} · ${tool.replaceAll("_", " ")}${ok ? "" : " needs attention"}`);
       job.transcriptCues = store.getTranscript(job.courseId, undefined, 100000).cues.length;
-    }, signal);
+    }, signal, undefined, progress => { job.progress = progress; job.updatedAt = Date.now(); });
     signal.addEventListener("abort", closeSession, { once: true });
     if (signal.aborted) throw new Error("Build cancelled.");
     workspace = await mkdtemp(join(tmpdir(), "vidmark-course-agent-"));

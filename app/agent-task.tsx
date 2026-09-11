@@ -5,9 +5,11 @@ import { LoaderCircle, SearchCheck } from "lucide-react";
 import type { QuestionReview } from "./question-review";
 import { QuestionReviewMarker } from "./question-review";
 import { createAgentTaskPoller } from "./agent-task-polling";
+import type { BuildProgress } from "./build-progress";
+import { BuildProgressView } from "./build-progress-view";
 
 const PROVIDER_URL = import.meta.env.VITE_VIDMARK_PROVIDER_ORIGIN || "http://127.0.0.1:31418";
-type AgentJob = { id: string; status: "queued" | "running" | "complete" | "failed"; harness?: string; phase: string; message: string; agentMessage?: string; review?: QuestionReview };
+type AgentJob = { id: string; status: "queued" | "running" | "complete" | "failed"; harness?: string; phase: string; message: string; agentMessage?: string; review?: QuestionReview; progress?: BuildProgress };
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${PROVIDER_URL}${path}`, init);
   const value = await response.json();
@@ -58,8 +60,10 @@ function useAgentTask(kind: "build" | "fact-check", query: string, onComplete?: 
 
 function TaskStatus({ job, status }: { job: AgentJob | null; status: string }) {
   return <>
-    {job && <div className={`build-job ${job.status}`} role="status"><div>{(job.status === "running" || job.status === "queued") && <LoaderCircle className="spin" aria-hidden="true" />}<span><b>{job.phase}</b><small>{job.message}</small></span></div></div>}
-    {job?.status === "failed" && job.agentMessage && <details className="agent-result-message"><summary>Agent’s last response</summary><p>{job.agentMessage}</p></details>}
+    {job && <div className={`build-job ${job.status}`}><div className="build-job-heading" role="status">{(job.status === "running" || job.status === "queued") && <LoaderCircle className="spin" aria-hidden="true" />}<span><b>{job.phase}</b><small>{job.message}</small></span></div>
+      {job.progress && <BuildProgressView progress={job.progress} running={job.status === "running" || job.status === "queued"} agentMessage={job.agentMessage} />}
+    </div>}
+    {job?.status === "failed" && job.agentMessage && !job.progress && <details className="agent-result-message"><summary>Agent’s last response</summary><p>{job.agentMessage}</p></details>}
     {status && <p role="status">{status}</p>}
   </>;
 }

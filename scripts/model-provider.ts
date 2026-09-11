@@ -17,6 +17,8 @@ import { agentPreferencesSchema, discoverHarness, readAgentPreferences, writeAge
 import { describeAgentSelection } from "../app/agent-harness";
 import { runCliCourseBuild, type BuildJob } from "./cli-course-build";
 import { runQuestionFactCheck, type FactCheckJob } from "./question-fact-check";
+import { CourseBuildProgress, buildProgressDescription, buildProgressReportSchema } from "./build-progress";
+import { publicAgentMessage } from "../app/build-progress";
 
 const PROVIDER_PORT = 31418;
 const KEYCHAIN_SERVICE = "com.vidmark.model-provider";
@@ -118,6 +120,7 @@ const artifactPageSchema = z.object({ artifact: z.enum(["studyGuide", "researchN
 const questionPageSchema = z.object({ offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(100).default(20) });
 
 const localTools = [
+  { type: "function", function: { name: "report_build_progress", description: buildProgressDescription, parameters: z.toJSONSchema(buildProgressReportSchema) } },
   { type: "function", function: { name: "set_course_build_requirements", description: "Record the user's requested quantity and chapter coverage before authoring. Omit quantity only when none was requested.", parameters: z.toJSONSchema(buildRequirementsSchema) } },
   { type: "function", function: { name: "get_course_question", description: "Read a saved question and its current revision before QA.", parameters: { type: "object", properties: { questionId: { type: "string" } }, required: ["questionId"] } } },
   { type: "function", function: { name: "upsert_course_question", description: "Before the first complete save, stage questions without changing the library. Commit staged questions by omitting questions in save_course_build. After saving, only exact-revision edits of active questions are allowed. Save a single schema-valid question incrementally. Does not mark the whole build complete.", parameters: { type: "object", properties: { question: z.toJSONSchema(questionSchema), expectedRevision: { type: "integer" } }, required: ["question"] } } },
@@ -146,6 +149,8 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
     const course = store.getCourse(job.courseId);
     if (!course) throw new Error("The selected course is not available to the local agent.");
     const revisionGuard = courseBuildRevision(store, job.courseId);
+    const progress = new CourseBuildProgress(progress => { job.progress = progress; job.updatedAt = Date.now(); });
+    progress.requirements(store.getBuildRequirements(job.courseId).questionCount);
     updateJob(job, "Starting coordinator", `Running ${settings.model} with the master and course-specific prompts.${!course.videoUrl ? " The coordinator will read the course source; no transcript is required." : course.transcript?.length ? "" : " The coordinator will acquire public captions before building."}`);
     const messages: ChatMessage[] = [{ role: "user", content: `${composeCourseBuildPrompt(String(course.title), String(course.id), String(course.coursePrompt), String(course.promptCredit), getSystemPrompt("courseBuilderMaster", promptOverrides))}\n\n${getSystemPrompt("coordinatorRuntime", promptOverrides)}` }];
     const tools: unknown[] = [...localTools, ...(settings.provider === "openrouter" && settings.enableWebSearch ? [{ type: "openrouter:web_search", max_total_results: 10, search_context_size: "high" }] : [])];
@@ -154,7 +159,10 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
     const sourceTexts: string[] = [];
     messages.unshift({ role: "system", content: `Current date: ${new Date().toISOString().slice(0, 10)}. ${artifactContract}` });
 
-    for (let turn = 0; turn < 40; turn += 1) {
+    // Progress-only responses have a separate bounded allowance so status updates
+    // do not consume the existing 40 authoring/recovery turns.
+    let workTurns = 0, progressTurns = 0;
+    for (let turn = 0; workTurns < 40 && progressTurns < 40; turn += 1) {
       signal.throwIfAborted();
       updateJob(job, `Agent turn ${turn + 1}`, "The coordinator is reading evidence or delegating specialist work.");
       const modelStarted = Date.now();
@@ -163,7 +171,10 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
       signal.throwIfAborted();
       debug.record("model.finished", turn + 1, Date.now() - modelStarted);
       messages.push(assistant);
+      if (assistant.content?.trim()) job.agentMessage = publicAgentMessage(assistant.content);
       const calls = assistant.tool_calls ?? [];
+      if (calls.length && calls.every(call => call.function.name === "report_build_progress")) progressTurns += 1;
+      else workTurns += 1;
       if (!calls.length) {
         if (saved) break;
         if (assistant.content?.trim()) messages.push({ role: "user", content: getSystemPrompt("coordinatorContinue", promptOverrides) });
@@ -177,11 +188,17 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
         try {
           signal.throwIfAborted();
           const args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
-          if (call.function.name === "set_course_build_requirements") {
-            result = revisionGuard.run(() => store.setBuildRequirements(String(course.id), buildRequirementsSchema.parse(args)));
+          if (call.function.name === "report_build_progress") {
+            progress.report(args); result = { reported: true, savedToLibrary: false };
+          } else if (call.function.name === "set_course_build_requirements") {
+            const requirements = buildRequirementsSchema.parse(args);
+            result = revisionGuard.run(() => store.setBuildRequirements(String(course.id), requirements));
+            progress.requirements(requirements.questionCount);
           } else if (call.function.name === "get_course_question") {
             const id = String(args.questionId);
             result = stagedQuestions.has(id) ? { staged: true, payload: stagedQuestions.get(id) } : reviewEvidence.readQuestion(store.getQuestion(String(course.id), id));
+            const question = stagedQuestions.get(id) ?? store.getQuestion(job.courseId, id)?.payload;
+            if (question) progress.question("Reading question", question);
           } else if (call.function.name === "upsert_course_question") {
             const question = validateQuestion(args.question);
             const expectedRevision = args.expectedRevision === undefined ? undefined : z.number().int().min(1).parse(args.expectedRevision);
@@ -192,17 +209,20 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
             if (!saved) {
               if (!stagedQuestions.has(question.id) && stagedQuestions.size >= 1000) throw new Error("A build can stage at most 1000 questions.");
               stagedQuestions.set(question.id, question);
+              progress.question("Question staged", question, stagedQuestions.size);
               result = { staged: true, savedToLibrary: false, stagedCount: stagedQuestions.size };
             } else {
               const questions = store.activeQuestionPayloads(String(course.id)).map(q => q.id === question.id ? question : q);
               if (!current || expectedRevision === undefined) throw new Error("After saving, only existing questions can be edited. Start a new complete build to add questions.");
               result = revisionGuard.run(() => store.saveCourseBuild(String(course.id), { questions }, { id: question.id, expectedRevision }));
+              progress.question("Question saved", question);
             }
           } else if (call.function.name === "record_question_review") {
             const questionId = String(args.questionId);
             if (stagedQuestions.has(questionId)) throw new Error("Commit staged questions before recording their QA.");
             const revision = z.number().int().min(1).parse(args.expectedRevision);
             result = revisionGuard.run(() => store.reviewQuestion(String(course.id), questionId, revision, reviewEvidence.validate(questionId, revision, args.review), "local-model"));
+            progress.question("Question review recorded", store.getQuestion(job.courseId, questionId)?.payload);
           } else if (call.function.name === "get_course") {
             Object.assign(course, store.getCourse(job.courseId));
             result = { id: course.id, title: course.title, sourceUrl: course.sourceUrl, videoUrl: course.videoUrl, coursePrompt: course.coursePrompt, promptCredit: course.promptCredit, transcriptCues: course.transcript.length, buildRequirements: store.getBuildRequirements(String(course.id)), existing: { chapters: course.chapters?.length ?? 0, questions: store.listQuestions(job.courseId).total, hasStudyGuide: Boolean(course.studyGuide) }, readArtifacts: { tool: "get_course_artifact", artifacts: artifactPageSchema.shape.artifact.options }, readQuestions: "list_course_questions" };
@@ -267,6 +287,7 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
             debug.outcome(job.id, "save_course_build", true);
             saved = true;
             stagedQuestions.clear();
+            progress.committed(store.getCourse(job.courseId)!.chapters.length, store.activeQuestionPayloads(job.courseId).length);
             result = { ...result as Record<string, unknown>, next: "Course saved. Optionally record_question_review for exact saved revisions, or return a final summary. Unreviewed questions remain marked with an asterisk." };
           } else {
             result = { error: `Unknown tool ${call.function.name}.` };

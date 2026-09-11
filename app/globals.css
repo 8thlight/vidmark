@@ -526,13 +526,26 @@ button { color:inherit; }
 .build-readiness.acquire span { color:#42658d; }
 .build-readiness p { margin:4px 0 0; color:var(--muted); font-size:8px; line-height:1.4; }
 .build-job { margin-top:12px; padding:12px 14px; border:1px solid #bfd1e4; border-radius:9px; background:#f4f8fc; }
-.build-job>div { display:flex; align-items:flex-start; gap:9px; }
+.build-job-heading { display:flex; align-items:flex-start; gap:9px; }
 .build-job svg { width:16px; height:16px; color:#3d6d9d; }
-.build-job span { display:grid; gap:4px; }
-.build-job b { font-size:9px; }
-.build-job small { color:var(--muted); font-size:8px; }
+.build-job-heading span { display:grid; gap:4px; }
+.build-job b { font-size:12px; }
+.build-job small { color:var(--muted); font-size:11px; }
 .build-job.failed { border-color:#e7bdb7; background:#fff6f4; }
 .build-job.complete { border-color:#b9d7c6; background:#f2faf5; }
+.build-progress { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); overflow-wrap:anywhere; }
+.build-progress p { margin:0; font-size:13px; line-height:1.6; }
+.build-progress .build-progress-label { color:var(--muted); font-size:11px; }
+.build-progress dl { margin:8px 0 12px; display:grid; gap:12px; }
+.build-progress dt { color:var(--muted); font-size:11px; }
+.build-progress dd { margin:4px 0 0; font-size:13px; line-height:1.5; }
+.build-progress-counts { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.build-progress-counts dd { font-size:18px; font-weight:700; font-variant-numeric:tabular-nums; }
+.build-progress .build-progress-note { color:var(--muted); font-size:11px; }
+.build-progress-update { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
+.build-progress-update p { white-space:pre-wrap; margin-top:4px; }
+.build-progress .agent-result-message { max-height:180px; overflow:auto; font-size:11px; }
+@media (max-width:600px) { .build-progress-counts { grid-template-columns:1fr; gap:8px; } .build-progress-counts>div { display:flex; justify-content:space-between; align-items:center; gap:10px; } .build-progress-counts dd { margin:0; } }
 .build-alternative { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:9px 12px; margin-top:15px; padding:11px 13px; border:1px dashed var(--line); border-radius:9px; }
 .build-alternative>span { color:var(--muted); font-size:8px; }
 .build-alternative>code { grid-column:1 / -1; overflow:auto; border-radius:6px; background:var(--paper); padding:8px; color:var(--ink); font-size:8px; }
