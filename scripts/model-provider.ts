@@ -387,6 +387,7 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
           if (agent.harness === "provider" && !settings.configured) throw new Error("Configure a model before starting a course build.");
           const store = new VidmarkDatabase(databasePath);
           try { if (!store.getCourse(courseId)) throw new Error("Course not found."); } finally { store.close(); }
+          // Admission through map insertion must remain synchronous: queued jobs reserve capacity.
           const active = [...buildJobs.values(), ...factChecks.values()].filter(job => job.status === "queued" || job.status === "running");
           if (active.some(job => job.courseId === courseId)) throw new Error("This course already has a build running. Wait for it or cancel it before starting another.");
           if (active.length >= 2) throw new Error("Two course builds are already running. Wait for one to finish.");
@@ -428,6 +429,7 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
             if (!question || question.archived) throw new Error("Question not found.");
             if (question.contentHash !== input.contentHash) throw new Error("Question changed. Refresh the question before checking it.");
           } finally { store.close(); }
+          // No await between these admission checks and factChecks.set below.
           const running = (job: BuildJob) => job.status === "running" || job.status === "queued";
           if ([...factChecks.values()].some(job => running(job) && job.courseId === input.courseId && job.questionId === input.questionId)) throw new Error("A fact check is already running for this question.");
           if ([...buildJobs.values()].some(job => running(job) && job.courseId === input.courseId)) throw new Error("Wait for this course build to finish before checking its questions.");

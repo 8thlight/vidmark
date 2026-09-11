@@ -138,10 +138,12 @@ export function AgentProviderDialog({ open, onClose }: { open: boolean; onClose:
   const saveAndTest = async () => {
     setBusy(true); setStatus("Saving the connection…");
     try {
-      await saveAgent();
+      if (!preferencesReady) throw new Error("Wait for saved agent preferences to load before saving.");
       const saved = await responseJson<ProviderSettings>(await fetch(`${PROVIDER_URL}/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...settings, apiKey }) }));
       setSettings(saved); window.dispatchEvent(new Event(AGENT_SETTINGS_CHANGED)); setApiKey(""); setStatus("Testing the selected model…");
       const tested = await responseJson<{ response: string }>(await fetch(`${PROVIDER_URL}/test`, { method: "POST" }));
+      // Keep the previously selected agent when connection validation fails.
+      await saveAgent();
       setStatus(tested.response || "Model connection ready.");
       setModels((await responseJson<{ models: string[] }>(await fetch(`${PROVIDER_URL}/models`))).models);
     } catch (error) { setStatus(error instanceof Error ? error.message : "The model connection failed."); }

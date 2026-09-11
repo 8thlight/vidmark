@@ -17,6 +17,19 @@ const question = { ...sample, id: "q1", sectionId: "chapter", videoReferences: [
 const chapter = { id: "chapter", title: "Chapter", summary: "Summary" };
 const review = { reviewer: "Connected agent", outcome: "reviewed", notes: "Checked answer and every distractor against the cited source.", evidence: ["https://example.com/docs"] };
 
+test("explicit empty shared question snapshots clear active questions but omitted fields preserve them", () => {
+  const id = "empty-shared-bank";
+  db.upsertCourse({ id, title: "Snapshot", sourceUrl: "https://example.com" });
+  db.replaceQuestions(id, [question, { ...question, id: "archived" }]);
+  db.archiveQuestion(id, "archived");
+  const archived = db.getQuestion(id, "archived");
+  db.importCourseBundle({ course: { id, title: "Legacy partial bundle" } });
+  expect(db.listQuestions(id).total).toBe(1);
+  db.importCourseBundle({ course: { id, title: "Empty snapshot", questions: [] } });
+  expect(db.listQuestions(id).total).toBe(0);
+  expect(db.getQuestion(id, "archived")).toEqual(archived);
+});
+
 test("bulk saves enforce structure, coverage, quantity and atomic rollback without requiring QA", () => {
   db.upsertCourse({ id: "quality", title: "Quality", studyGuide: "Original", sourceUrl: "https://example.com" });
   db.setBuildRequirements("quality", { questionCount: 1, chapterIds: ["chapter"] });

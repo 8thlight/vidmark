@@ -93,6 +93,31 @@ test("task polling stops on terminal or empty jobs, restarts, and ignores stale 
   poller.restart(); poller.stop(); pending[2]({ status: "complete" }); await pause(); expect(applied).toBe(1);
 });
 
+test("disconnecting a full-MCP transcript request aborts acquisition and rejects late results", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vidmark-full-mcp-caption-abort-"));
+  let began!: () => void, finish!: () => void, cancelled!: () => void;
+  const started = new Promise<void>(resolve => { began = resolve; });
+  const release = new Promise<void>(resolve => { finish = resolve; });
+  const aborted = new Promise<void>(resolve => { cancelled = resolve; });
+  const service = await startVidmarkMcpServer(join(dir, "test.sqlite"), { port: 0, acquireTranscript: async (_url, _language, signal) => {
+    expect(signal).toBeDefined();
+    if (signal!.aborted) cancelled(); else signal!.addEventListener("abort", cancelled, { once: true });
+    began(); await release;
+    // A misbehaving/just-completed extractor may return despite cancellation.
+    return { videoId: "o3CX_Y59_74", language: "en", trackName: "Test", automaticallyGenerated: true, sourceUrl: "https://youtube.com", acquiredAt: new Date().toISOString(), cues: [{ time: 0, text: "Late captions" }] };
+  } });
+  const controller = new AbortController();
+  try {
+    service.store.upsertCourse({ id: "abort", title: "Abort", videoUrl: "https://youtu.be/o3CX_Y59_74" });
+    const before = service.store.getCourse("abort");
+    const pending = fetch(new URL("/mcp", service.server.url), { signal: controller.signal, method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "acquire_course_transcript", arguments: { courseId: "abort" } } }) }).then(response => response.text()).catch(() => "cancelled");
+    await started; controller.abort();
+    await Promise.race([aborted, Bun.sleep(2000).then(() => { throw new Error("HTTP disconnect did not abort acquisition"); })]);
+    finish(); await pending; await Bun.sleep(20);
+    expect(service.store.getCourse("abort")).toEqual(before);
+  } finally { controller.abort(); finish(); service.stop(true); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("general MCP caption acquisition also guards concurrent imports", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vidmark-full-mcp-caption-race-"));
   const manual = [{ time: 5, text: "User import" }];

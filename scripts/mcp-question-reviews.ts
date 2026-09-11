@@ -28,6 +28,7 @@ export class McpQuestionReviews {
   }
   async start(courseId: string, questionId: string, reviewer: string, overrides: SystemPromptOverrides) {
     for (const [id, entry] of this.entries) if (entry.expiresAt <= this.now()) this.end(id);
+    // Keep capacity checking and entries.set synchronous; the first await follows reservation.
     if (this.entries.size >= 32) throw new Error("Too many active question reviews. Finish a review or wait for it to expire.");
     const question = this.store.getQuestion(courseId, questionId);
     if (!question || question.archived) throw new Error("Question not found.");

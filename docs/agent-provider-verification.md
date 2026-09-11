@@ -38,6 +38,10 @@ Before and after review, both questions retained revision 1 and the same content
 
 ### Review regressions
 
+- Save & test commits the agent preference only after connection validation succeeds. An isolated Playwright check injected settings-save and connection-test failures: both retained the previously saved Codex selection with zero agent-preference writes. Success recorded settings → test → agent preference; all three runs had zero JavaScript runtime errors.
+- Explicit empty shared question arrays clear active questions, while omitted fields preserve older partial-bundle behavior and archived rows retain their history.
+- Full-MCP caption acquisition combines HTTP disconnect, MCP cancellation and server shutdown signals, propagates cancellation to extraction, and checks again before writing. A real HTTP-disconnect regression returns late extractor results deliberately and verifies the course remains unchanged.
+- Concurrent admission regressions start 40 full-MCP review sessions (exactly 32 accepted) and burst 12 requests at the provider API: duplicate builds/fact checks admit one, and mixed distinct-course tasks admit exactly two. Slots are reserved synchronously before yielding; no mutex is needed in this single-process event loop.
 - Scoped edits preserve archived questions and historical reviews; staged banks still commit atomically.
 - Both course-build runtimes require an exact question read and successfully retrieved evidence IDs before recording QA. An explicit inconclusive result can record missing evidence.
 - Research connections pin validated public IPs, revalidate redirects, preserve TLS verification, and enforce a 2 MiB response limit while streaming. Citations accept only credential-free HTTP(S) URLs.

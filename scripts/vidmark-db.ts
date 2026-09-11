@@ -789,7 +789,7 @@ export class VidmarkDatabase {
     const saved = this.upsertCourse({ id, title: String(course.title ?? `Course · ${id}`), source: String(course.source ?? "YouTube"), sourceUrl: String(course.sourceUrl ?? course.videoUrl ?? ""), videoUrl: String(course.videoUrl ?? (!course.sourceUrl && youtubeId(String(course.videoId ?? id)) ? `https://www.youtube.com/watch?v=${course.videoId ?? id}` : "")), originPrompt: String(course.coursePrompt ?? course.originPrompt ?? "Build a well-researched course from this video."), promptCredit: String(course.promptCredit ?? "Course creator"), studyGuide: course.studyGuide === undefined ? undefined : String(course.studyGuide ?? ""), researchNotes: course.researchNotes === undefined ? undefined : String(course.researchNotes ?? ""), active: true });
     if (Array.isArray(course.transcript)) this.replaceTranscript(id, course.transcript as Array<{ time: number; text: string }>);
     if (Array.isArray(course.chapters)) this.replaceChapters(id, course.chapters);
-    if (questions.length) this.replaceQuestions(id, questions, { importing: true });
+    if (Array.isArray(course.questions)) this.replaceQuestions(id, questions, { importing: true });
     // Shared QA is an attributed report, never a fresh local verification.
     for (const item of Array.isArray(course.questions) ? course.questions : []) {
       if (!item || typeof item !== "object") continue;

@@ -26,6 +26,18 @@ const setup = (id: string) => {
 const fetchEvidence = async () => ({ ok: true, content: "Primary evidence." });
 const report = { verdict: "accurate", reasoning: "The retrieved primary evidence supports the stated facts and answer rationales.", evidenceIds: ["https://example.com"] };
 
+test("concurrent full-MCP review starts reserve all 32 slots before yielding", async () => {
+  const q = setup("review-admission");
+  const reviews = new McpQuestionReviews(db);
+  try {
+    const results = await Promise.allSettled(Array.from({ length: 40 }, () => reviews.start(q.courseId, q.id, "QA", {})));
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(32);
+    const rejected = results.filter(result => result.status === "rejected");
+    expect(rejected).toHaveLength(8);
+    for (const result of rejected) expect(String(result.reason)).toContain("Too many");
+  } finally { reviews.close(); }
+});
+
 test("fact checks bind transcript pages to an immutable hashed snapshot", async () => {
   const q = setup("transcript-snapshot");
   db.replaceTranscript(q.courseId, [{ time: 0, text: "Original source" }, { time: 1, text: "Original continuation" }]);

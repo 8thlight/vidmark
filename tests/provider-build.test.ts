@@ -333,6 +333,46 @@ test("the build API exposes cancellation for the in-app provider and stops its H
   } finally { server.stop(true); model.stop(true); }
 });
 
+for (const mode of ["duplicate-build", "duplicate-fact-check", "mixed-capacity"] as const) test(`concurrent task admission: ${mode}`, async () => {
+  const model = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: request => new Promise<Response>(resolve => {
+    const finish = () => resolve(new Response(null, { status: 499 }));
+    if (request.signal.aborted) finish(); else request.signal.addEventListener("abort", finish, { once: true });
+  }) });
+  const settingsPath = join(root, `${mode}.json`);
+  const agent = { harness: "provider", models: { codex: "", claude: "" } };
+  await writeFile(settingsPath, JSON.stringify({ ...settings, baseUrl: model.url.toString() + "v1" }));
+  await writeFile(join(root, "agent-settings.json"), JSON.stringify(agent));
+  const server = startModelProviderServer(settingsPath, databasePath, join(root, "prompts.json"), 0);
+  const accepted: Array<{ id: string; route: string }> = [];
+  try {
+    const inputs = Array.from({ length: 12 }, (_, index) => {
+      const courseId = `${mode}-${mode === "mixed-capacity" ? index : 0}`;
+      jobFor(courseId); const question = db.upsertQuestion(courseId, fixture)!;
+      const route = mode === "duplicate-fact-check" || (mode === "mixed-capacity" && index % 2) ? "/fact-check" : "/build";
+      return { route, body: route === "/build" ? { courseId, agent } : { courseId, questionId: question.id, contentHash: question.contentHash } };
+    });
+    const results = await Promise.all(inputs.map(async ({ route, body }) => {
+      const response = await fetch(new URL(route, server.url), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const result = await response.json();
+      if (response.status === 202) accepted.push({ id: result.id, route });
+      return { ...result, status: response.status };
+    }));
+    expect(accepted).toHaveLength(mode === "mixed-capacity" ? 2 : 1);
+    for (const result of results.filter(result => result.status !== 202)) {
+      expect(result.status).toBe(400);
+      expect(result.error).toMatch(/already running|already has a build/);
+    }
+  } finally {
+    for (const { id, route } of accepted) await fetch(new URL(`${route}/${id}/cancel`, server.url), { method: "POST" });
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const jobs = await Promise.all(accepted.map(async ({ id, route }) => (await fetch(new URL(`${route}/${id}`, server.url))).json()));
+      if (jobs.every(job => job.status !== "queued" && job.status !== "running")) break;
+      await Bun.sleep(10);
+    }
+    server.stop(true); model.stop(true);
+  }
+});
+
 test("explicit detection refresh bypasses the cache immediately after login changes", async () => {
   let calls = 0, ready = false;
   const server = startModelProviderServer(join(root, "discovery-settings.json"), databasePath, join(root, "prompts.json"), 0, { discoverHarness: async id => {

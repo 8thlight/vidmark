@@ -24,7 +24,8 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
   const store = new VidmarkDatabase(databasePath);
   const reviews = new McpQuestionReviews(store);
   const sync = await new VidmarkSyncService(store).start();
-  const handler = createMcpHandler(() => {
+  const shutdown = new AbortController();
+  const handler = createMcpHandler((requestContext) => {
     const server = new McpServer({ name: "vidmark-local", version: MCP_VERSION }, { capabilities: { tools: {}, prompts: {} } });
     server.registerTool("list_courses", { description: "List local Vidmark courses with SQLite-backed artifact counts and revisions.", inputSchema: z.object({}) }, async () => textResult(store.listCourses()));
     server.registerTool("get_course", { description: "Read one course, its credited prompt, transcript, chapters, question records, and course-scoped concept graph.", inputSchema: z.object({ courseId: z.string().min(1) }) }, async ({ courseId }) => textResult(store.getCourse(courseId) ? { ...store.getCourse(courseId), buildRequirements: store.getBuildRequirements(courseId) } : { error: `Course ${courseId} was not found.` }));
@@ -64,12 +65,15 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
     server.registerTool("review_question_suggestion", { description: "Accept or reject a pending suggestion. Acceptance applies its change atomically.", inputSchema: z.object({ suggestionId: z.string().min(1), decision: z.enum(["accepted", "rejected"]), reviewNote: z.string().optional() }) }, async ({ suggestionId, decision, reviewNote }) => textResult(store.reviewSuggestion(suggestionId, decision, store.getProfile()?.id, reviewNote)));
     server.registerTool("get_transcript", { description: "Read or search a course transcript with timestamps.", inputSchema: z.object({ courseId: z.string().min(1), query: z.string().optional(), limit: z.number().int().min(1).max(1000).default(250) }) }, async ({ courseId, query, limit }) => textResult(store.getTranscript(courseId, query, limit)));
     server.registerTool("replace_transcript", { description: "Replace a transcript with timestamped cues after authorized extraction or import.", inputSchema: z.object({ courseId: z.string().min(1), cues: z.array(z.object({ time: z.number().min(0), text: z.string().min(1) })).max(100000) }) }, async ({ courseId, cues }) => { store.replaceTranscript(courseId, cues); return textResult({ saved: courseId, cues: cues.length }); });
-    server.registerTool("acquire_course_transcript", { description: "Retrieve a course video's public YouTube caption track, preserve its timestamps, and save it to local SQLite. Use this when get_transcript reports no cues; it does not bypass authentication or unavailable captions.", inputSchema: z.object({ courseId: z.string().min(1), preferredLanguage: z.string().min(2).max(20).default("en") }) }, async ({ courseId, preferredLanguage }) => {
+    server.registerTool("acquire_course_transcript", { description: "Retrieve a course video's public YouTube caption track, preserve its timestamps, and save it to local SQLite. Use this when get_transcript reports no cues; it does not bypass authentication or unavailable captions.", inputSchema: z.object({ courseId: z.string().min(1), preferredLanguage: z.string().min(2).max(20).default("en") }) }, async ({ courseId, preferredLanguage }, ctx) => {
+      const signal = AbortSignal.any([shutdown.signal, ctx.mcpReq.signal, ...(requestContext.requestInfo ? [requestContext.requestInfo.signal] : [])]);
+      signal.throwIfAborted();
       const course = store.getCourse(courseId);
       if (!course) return textResult({ error: `Course ${courseId} was not found.` });
       if (!course.videoUrl) return textResult({ error: "This is a non-video course. Read its sourceUrl; no transcript is required." });
       const transcriptHash = store.transcriptHash(courseId);
-      const acquired = await (options.acquireTranscript ?? acquireYouTubeTranscript)(String(course.videoUrl ?? course.videoId ?? course.id), preferredLanguage);
+      const acquired = await (options.acquireTranscript ?? acquireYouTubeTranscript)(String(course.videoUrl ?? course.videoId ?? course.id), preferredLanguage, signal);
+      signal.throwIfAborted();
       store.replaceTranscript(courseId, acquired.cues, transcriptHash);
       return textResult({ saved: courseId, cues: acquired.cues.length, videoId: acquired.videoId, language: acquired.language, trackName: acquired.trackName, automaticallyGenerated: acquired.automaticallyGenerated, sourceUrl: acquired.sourceUrl, acquiredAt: acquired.acquiredAt });
     });
@@ -167,6 +171,6 @@ export async function startVidmarkMcpServer(databasePath: string, options: { sys
     } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Vidmark request failed." }, { status: 400, headers }); }
   }});
   console.log(`Vidmark MCP ${MCP_VERSION} is listening at http://127.0.0.1:${server.port}/mcp with SQLite at ${databasePath}`);
-  return { stop(force = false) { reviews.close(); sync.stop(); server.stop(force); store.close(); }, store, sync, server };
+  return { stop(force = false) { shutdown.abort(); reviews.close(); sync.stop(); server.stop(force); store.close(); }, store, sync, server };
 }
 type BrowserSyncCourse = { id: string; title: string; source?: string; videoUrl?: string; sourceUrl?: string; originPrompt?: string; promptCredit?: string; transcript?: Array<{ time: number; text: string }>; conceptGraph?: unknown };
