@@ -30,9 +30,9 @@ Question shares arrive as pending imports. The recipient can compare their local
 
 | Artifact | Purpose |
 | --- | --- |
-| [Vidmark 1.4.3 for macOS](releases/Vidmark-1.4.3.dmg) | Complete desktop application |
-| [Claude Desktop MCP Bundle](releases/Vidmark-1.4.3.mcpb) | Preferred Claude Desktop extension |
-| [Claude Desktop DXT build](releases/Vidmark-1.4.3.dxt) | Compatibility package for Claude versions that request `.dxt` |
+| [Vidmark 1.4.4 for macOS](releases/Vidmark-1.4.4.dmg) | Complete desktop application |
+| [Claude Desktop MCP Bundle](releases/Vidmark-1.4.4.mcpb) | Preferred Claude Desktop extension |
+| [Claude Desktop DXT build](releases/Vidmark-1.4.4.dxt) | Compatibility package for Claude versions that request `.dxt` |
 
 Open the disk image, drag Vidmark to Applications, and launch it. The repository build is ad-hoc signed rather than Apple-notarized, so the first launch may require Control-clicking Vidmark, choosing **Open**, and confirming.
 
@@ -59,6 +59,8 @@ The sidebar shows your saved provider and model above Settings. Hover or focus i
 CLI builds use your existing account and usage limits. They receive a temporary MCP connection restricted to the selected course, without changing global MCP configuration. Course material is sent to the selected provider. Start or cancel builds from the course overview; artifacts already saved remain in SQLite. Completion requires a successful agent result and a complete course saved through MCP.
 
 For large question banks, the CLI can stage questions incrementally and commit the complete course atomically. Incomplete or cancelled staging does not replace the library’s existing questions.
+
+App-started builds show the latest agent update, chapter/question activity when reported, and separate staged-question and saved-content counts. The temporary build MCP session provides `report_build_progress`; the in-app coordinator has the same tool. Agent-reported positions are not completion percentages. Progress is kept for the current app session, not across restarts; externally launched full-MCP tasks do not appear in this panel.
 
 ## MCP client integration
 

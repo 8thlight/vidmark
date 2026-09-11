@@ -7,6 +7,7 @@ import * as z from "zod";
 import type { AgentPreferences, CliHarness, HarnessModel, HarnessStatus } from "../app/agent-harness";
 import { initialAgentPreferences } from "../app/agent-harness";
 import { courseAgentToolNames } from "./course-agent-tools";
+import { publicAgentMessage } from "../app/build-progress";
 
 const modelId = z.string().trim().max(160).refine(value => !value || /^[\w./:@+-]+$/.test(value), "Enter a model ID, not command-line options.");
 export const agentPreferencesSchema = z.object({ harness: z.enum(["codex", "claude", "provider"]), models: z.object({ codex: modelId, claude: modelId }) });
@@ -255,8 +256,13 @@ export function cliEventState(id: CliHarness, line: string): "progress" | "compl
 export function cliResultMessage(id: CliHarness, line: string): string | undefined {
   let event: Json; try { event = JSON.parse(line); } catch { return; }
   const item = object(event.item);
-  const message = id === "codex" ? event.type === "item.completed" && item.type === "agent_message" ? item.text : event.type === "turn.failed" ? object(event.error).message : undefined : event.type === "result" ? event.result || (Array.isArray(event.errors) ? event.errors.join("\n") : undefined) : undefined;
+  let message = id === "codex" ? event.type === "item.completed" && item.type === "agent_message" ? item.text : event.type === "turn.failed" ? object(event.error).message : undefined : event.type === "result" ? event.result || (Array.isArray(event.errors) ? event.errors.join("\n") : undefined) : undefined;
+  // Only top-level, public assistant text. Never show thinking or tool payloads.
+  if (id === "claude" && event.type === "assistant" && !event.parent_tool_use_id) {
+    const content = object(event.message).content;
+    if (Array.isArray(content)) message = content.map(object).filter(block => block.type === "text" && typeof block.text === "string").map(block => block.text).join("\n");
+  }
   if (typeof message !== "string") return;
   // Transient UI feedback only, never a diagnostic payload or prompt instruction.
-  return message.replace(/http:\/\/127\.0\.0\.1:\d+\/mcp\/[a-zA-Z0-9-]+/g, "[temporary MCP endpoint]").replace(/\b(?:sk-|Bearer )[A-Za-z0-9_-]{12,}/g, "[redacted]").slice(0, 6000);
+  return publicAgentMessage(message);
 }

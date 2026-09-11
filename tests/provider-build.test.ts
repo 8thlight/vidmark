@@ -24,6 +24,43 @@ const jobFor = (id: string): BuildJob => {
 const tool = (name: string, args: unknown) => ({ role: "assistant" as const, content: null, tool_calls: [{ id: crypto.randomUUID(), type: "function" as const, function: { name, arguments: JSON.stringify(args) } }] });
 const fetchResearch = (url: string) => researchFetchResult(url, async () => "Actual primary evidence");
 
+test("local provider reports live work without consuming authoring turns or claiming a save", async () => {
+  const job = jobFor("provider-progress"); let turn = 0;
+  const report = { message: "Writing the first question", chapter: { title: "Evidence", position: 1, total: 1 } };
+  await runBuild(job, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
+    fetchResearch, callModel: async () => {
+      turn += 1;
+      if (turn === 1) return tool("set_course_build_requirements", { questionCount: 1 });
+      if (turn < 39) return tool("get_course", {});
+      if (turn === 39) return { ...tool("report_build_progress", report), content: "Public coordinator update" };
+      if (turn === 40) { expect(job.progress?.report).toEqual(report); expect(job.progress?.saved).toBe(false); return tool("upsert_course_question", { question: fixture }); }
+      expect(job.progress?.stagedQuestions).toBe(1); expect(db.listQuestions(job.courseId).total).toBe(0);
+      return tool("save_course_build", { ...artifacts, questions: undefined });
+    },
+  });
+  expect(job.status).toBe("complete"); expect(job.progress).toMatchObject({ saved: true, stagedQuestions: 0, savedChapters: 1, savedQuestions: 1 });
+  expect(job.agentMessage).toBe("Public coordinator update");
+});
+
+test("using every extra progress turn still permits an atomic save, while report-only loops remain bounded", async () => {
+  const job = jobFor("provider-progress-budget"); let turn = 0;
+  await runBuild(job, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
+    fetchResearch, callModel: async () => {
+      turn += 1;
+      if (turn === 1) return tool("set_course_build_requirements", { questionCount: 1 });
+      if (turn <= 41) return tool("report_build_progress", { message: `Working on source ${turn}` });
+      if (turn === 42) return tool("save_course_build", artifacts);
+      return { role: "assistant", content: "Done" };
+    },
+  });
+  expect(turn).toBe(43); expect(job.status).toBe("complete"); expect(job.progress?.savedQuestions).toBe(1);
+  const endless = jobFor("provider-progress-endless"); let reports = 0;
+  await runBuild(endless, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
+    fetchResearch, callModel: async () => { reports += 1; return tool("report_build_progress", { message: "Still working" }); },
+  });
+  expect(reports).toBe(80); expect(endless.status).toBe("failed"); expect(endless.progress?.saved).toBe(false); expect(db.listQuestions(endless.courseId).total).toBe(0);
+});
+
 test("model hosts reject query strings, fragments and credentials before paths are appended", () => {
   for (const suffix of ["?tenant=one", "#fragment", "?", "#"]) expect(() => normalizeBaseUrl(`http://localhost:11434/v1${suffix}`)).toThrow("query string or fragment");
   expect(() => normalizeBaseUrl("http://user:secret@localhost/v1")).toThrow("credentials");

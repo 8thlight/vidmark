@@ -8,15 +8,19 @@ import { getSystemPrompt, type SystemPromptOverrides } from "../app/system-promp
 import { courseAgentToolNames } from "./course-agent-tools";
 import { CourseReviewEvidence } from "./course-review-evidence";
 import { courseBuildRevision } from "./course-build-revision";
+import { CourseBuildProgress, buildProgressDescription, buildProgressReportSchema } from "./build-progress";
+import type { BuildProgress } from "../app/build-progress";
 
 const textResult = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
 
 // A capability endpoint for one build, not a proxy to the full learner MCP.
 // It cannot share/publish, change profiles/settings, or modify another course.
-export function createCourseAgentSession(store: VidmarkDatabase, courseId: string, overrides: SystemPromptOverrides, fetchResearch: (url: string) => Promise<unknown>, onTool: (name: string, ok: boolean) => void, signal?: AbortSignal, dependencies = { acquireYouTubeTranscript }) {
+export function createCourseAgentSession(store: VidmarkDatabase, courseId: string, overrides: SystemPromptOverrides, fetchResearch: (url: string) => Promise<unknown>, onTool: (name: string, ok: boolean) => void, signal?: AbortSignal, dependencies = { acquireYouTubeTranscript }, onProgress: (progress: BuildProgress) => void = () => {}) {
   const course = store.getCourse(courseId);
   if (!course) throw new Error("Course not found.");
   const revision = courseBuildRevision(store, courseId);
+  const progress = new CourseBuildProgress(onProgress);
+  progress.requirements(store.getBuildRequirements(courseId).questionCount);
   let active = true, saved = false;
   const stagedQuestions = new Map<string, ReturnType<typeof validateQuestion>>();
   const evidence = new CourseReviewEvidence(id => store.getTranscript(id, undefined, 100000).cues);
@@ -32,6 +36,7 @@ export function createCourseAgentSession(store: VidmarkDatabase, courseId: strin
         catch (error) { if (active) onTool(name, false); return { ...textResult({ error: error instanceof Error ? error.message : "Course operation failed." }), isError: true }; }
       });
     };
+    tool("report_build_progress", buildProgressDescription, { ...scope, ...buildProgressReportSchema.shape }, input => { progress.report(input); return { reported: true, savedToLibrary: false }; });
     tool("get_course", "Read this course's identity, requirements and saved artifacts. Transcript is paginated with get_transcript.", scope, () => {
       const current = store.getCourse(courseId)!;
       return { ...current, transcript: undefined, transcriptCues: current.transcript.length, questions: undefined, questionCount: store.listQuestions(courseId).total, buildRequirements: store.getBuildRequirements(courseId) };
@@ -49,7 +54,10 @@ export function createCourseAgentSession(store: VidmarkDatabase, courseId: strin
       return { cues: acquired.cues.length, sourceUrl: acquired.sourceUrl, automaticallyGenerated: acquired.automaticallyGenerated };
     });
     tool("fetch_url", "Read a public source URL. Cite the returned evidenceId for QA. Failed fetches are missing evidence, not evidence of a claim.", { url: z.string().url() }, async ({ url }) => { const result = await fetchResearch(url); ensureActive(); evidence.fetched(url, result); return { ...result as object, evidenceId: url }; });
-    tool("set_course_build_requirements", "Record the user's requested question count and chapter coverage before writing. Use an empty object if unspecified. QA remains optional.", { ...scope, requirements: buildRequirementsSchema }, ({ requirements }) => revision.run(() => store.setBuildRequirements(courseId, requirements)));
+    tool("set_course_build_requirements", "Record the user's requested question count and chapter coverage before writing. Use an empty object if unspecified. QA remains optional.", { ...scope, requirements: buildRequirementsSchema }, ({ requirements }) => {
+      const result = revision.run(() => store.setBuildRequirements(courseId, requirements));
+      progress.requirements(requirements.questionCount); return result;
+    });
     tool("save_course_build", "Atomically save the complete course: guide, research notes, chapters, question bank and graph. For large banks, stage questions one at a time with upsert_course_question, then omit questions here to commit the staged bank. Database validation still enforces the complete count and coverage. QA is optional.", {
       ...scope, studyGuide: z.string().min(1), researchNotes: z.string().min(1), chapters: z.array(chapterSchema).min(1), questions: z.array(questionSchema).min(1).optional(), conceptGraph: z.record(z.string(), z.unknown()),
     }, input => {
@@ -57,26 +65,35 @@ export function createCourseAgentSession(store: VidmarkDatabase, courseId: strin
       const questions = input.questions ?? [...stagedQuestions.values()];
       if (!questions.length) throw new Error("Supply or stage the complete question bank before saving.");
       const result = revision.run(() => store.saveCourseBuild(courseId, { ...input, questions }));
-      saved = true; stagedQuestions.clear(); return result;
+      saved = true; stagedQuestions.clear();
+      progress.committed(store.getCourse(courseId)!.chapters.length, store.activeQuestionPayloads(courseId).length); return result;
     });
-    tool("get_course_question", "Read a staged question, or a saved question with its content hash and revision. Only saved questions can receive QA.", { ...scope, questionId: z.string().min(1) }, ({ questionId }) => stagedQuestions.has(questionId) ? { staged: true, payload: stagedQuestions.get(questionId) } : evidence.readQuestion(store.getQuestion(courseId, questionId)));
+    tool("get_course_question", "Read a staged question, or a saved question with its content hash and revision. Only saved questions can receive QA.", { ...scope, questionId: z.string().min(1) }, ({ questionId }) => {
+      const result = stagedQuestions.has(questionId) ? { staged: true, payload: stagedQuestions.get(questionId) } : evidence.readQuestion(store.getQuestion(courseId, questionId));
+      const question = stagedQuestions.get(questionId) ?? store.getQuestion(courseId, questionId)?.payload;
+      if (question) progress.question("Reading question", question);
+      return result;
+    });
     tool("list_course_questions", "Read the saved question bank with QA status in pages.", { ...scope, offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(100).default(20) }, input => store.listQuestions(courseId, input));
     tool("upsert_course_question", "Before the first complete save, stage one question in this build session without changing the library. Reuse its ID to revise it. Commit all staged questions by omitting questions in save_course_build. After saving, updates require expectedRevision and invalidate previous QA.", { ...scope, question: questionSchema, expectedRevision: z.number().int().min(1).optional() }, ({ question, expectedRevision }) => {
       const validated = validateQuestion(question);
       if (!saved) {
         if (!stagedQuestions.has(validated.id) && stagedQuestions.size >= 1000) throw new Error("A course build can stage at most 1000 questions.");
         stagedQuestions.set(validated.id, validated);
+        progress.question("Question staged", validated, stagedQuestions.size);
         return { staged: true, questionId: validated.id, stagedCount: stagedQuestions.size, savedToLibrary: false };
       }
       const current = store.getQuestion(courseId, validated.id);
       if (!current || expectedRevision === undefined || current.revision !== expectedRevision) throw new Error("Question revision conflict. Read the latest question first.");
       // Validate the complete bank without weakening coverage/evidence constraints.
       const questions = store.activeQuestionPayloads(courseId).map(q => q.id === validated.id ? validated : q);
-      return revision.run(() => store.saveCourseBuild(courseId, { questions }, { id: validated.id, expectedRevision }));
+      const result = revision.run(() => store.saveCourseBuild(courseId, { questions }, { id: validated.id, expectedRevision }));
+      progress.question("Question saved", validated); return result;
     });
     tool("record_question_review", "Record optional agent QA for an exact saved revision and content hash after checking its evidence. Attribution is agent-supplied; reviewer independence is not authenticated. Identify author self-reviews honestly. This does not certify accuracy.", { ...scope, questionId: z.string().min(1), expectedRevision: z.number().int().min(1), review: agentQuestionReviewSchema }, ({ questionId, expectedRevision, review }) => {
       if (stagedQuestions.has(questionId)) throw new Error("Commit staged questions before recording their QA.");
-      return revision.run(() => store.reviewQuestion(courseId, questionId, expectedRevision, evidence.validate(questionId, expectedRevision, review), "mcp"));
+      const result = revision.run(() => store.reviewQuestion(courseId, questionId, expectedRevision, evidence.validate(questionId, expectedRevision, review), "mcp"));
+      progress.question("Question review recorded", store.getQuestion(courseId, questionId)?.payload); return result;
     });
     return server;
   });
