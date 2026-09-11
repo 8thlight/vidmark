@@ -42,13 +42,25 @@ Vidmark checks its signed HTTPS update feed automatically and installs verified 
 
 1. Create a profile with your name, email, and DiceBear avatar. The email identifies you in the Vidmark directory; the app does not send email.
 2. Add a course title, source URL (web page or YouTube), course-specific prompt, and its credit.
-3. Choose **Build with agent**, or connect an external MCP client and request the `build_vidmark_course` prompt.
+3. Choose a provider in **Settings → Course agent** and save preferences, then use **Build with agent** on the course overview. You can also connect an external MCP client and request the `build_vidmark_course` prompt.
 4. Study the generated course locally.
 5. Share a complete course or an individual artifact with a registered user, or create a revocable course link.
 
 Each course owns its source link, optional primary video and transcript, chapters (including optional supporting videos), study guide, question bank, and independently revisioned concept graph. These artifacts stay together when the course is shared or published.
 
-## Claude integration
+### Course agents
+
+Vidmark detects installed **Codex CLI** and **Claude Code CLI** and checks their sign-in status. Sign in from Terminal with `codex login` or `claude auth login`, then choose **Refresh detection**. Recent CLI versions are required for isolated builds; the picker explains when an update is needed.
+
+**Settings → Course agent** has icon radio cards for OpenAI (Codex), Anthropic / Claude, and the optional in-app local/OpenRouter coordinator. **Save preferences** remembers the provider and model on this Mac. **Automatic** follows the CLI’s current recommended model at each run; explicitly choosing a model pins it. Model catalogs are discovered, not hard-coded. If recommendation metadata is unavailable, the CLI chooses its default; Vidmark does not guess release order.
+
+The sidebar shows your saved provider and model above Settings. Hover or focus it to see the full model name and automatic-selection status; click it to open Settings.
+
+CLI builds use your existing account and usage limits. They receive a temporary MCP connection restricted to the selected course, without changing global MCP configuration. Course material is sent to the selected provider. Start or cancel builds from the course overview; artifacts already saved remain in SQLite. Completion requires a successful agent result and a complete course saved through MCP.
+
+For large question banks, the CLI can stage questions incrementally and commit the complete course atomically. Incomplete or cancelled staging does not replace the library’s existing questions.
+
+## MCP client integration
 
 ### Claude Desktop
 
@@ -87,14 +99,14 @@ The `build_vidmark_course` prompt instructs the agent to read the course source 
 
 ## MCP tools
 
-Vidmark exposes 43 tools:
+Vidmark exposes 48 tools:
 
 | Capability | Tools |
 | --- | --- |
 | Courses | `list_courses`, `get_course`, `upsert_course` |
-| Complete builds | `save_course_build`, `list_course_chapters` |
+| Complete builds | `set_course_build_requirements`, `save_course_build`, `list_course_chapters` |
 | Concept graphs | `get_course_concept_graph`, `upsert_course_concept_graph` |
-| Questions | `list_course_questions`, `get_course_question`, `upsert_course_question`, `patch_course_question`, `archive_course_question` |
+| Questions | `list_course_questions`, `get_course_question`, `upsert_course_question`, `patch_course_question`, `archive_course_question`, `start_question_review`, `get_question_review_evidence`, `record_question_review`, `get_question_reviews` |
 | Question suggestions | `create_question_suggestion`, `list_question_suggestions`, `review_question_suggestion` |
 | Transcripts | `get_transcript`, `replace_transcript`, `acquire_course_transcript` |
 | Notes | `list_notes` |
@@ -112,8 +124,19 @@ Example:
 
 ```text
 Build my imported Kubernetes course. Acquire its public transcript if needed,
-coordinate specialist agents, and save the reviewed course to Vidmark.
+coordinate specialist agents, and save the course to Vidmark. Record question QA
+separately when performed; leave unreviewed questions marked with an asterisk.
 ```
+
+### Question review status
+
+Questions marked `*` have no recorded agent QA for their current content, have outstanding findings, or could not be verified. They remain usable. **Fact Check** uses the saved provider to assess factual accuracy of the question, answer, close second and rationales—not writing style or question design. Its scoped tools cannot edit content. It saves a reasoned report with evidence: no inaccuracies found, potential inaccuracies, or unable to verify. Reports may reveal answers. Stale question versions cannot receive a new review.
+
+A connected agent starts QA with `start_question_review`, retrieves sources with `get_question_review_evidence`, then calls `record_question_review` using the returned session ID and exact revision/hash. Sessions expire after 15 minutes and reject unread or invented evidence. Editing content invalidates its review. Shared courses preserve matching reports and archived states. QA is an attributed agent assessment, not a guarantee of correctness or independently authenticated reviewer identity; author self-reviews must be labeled honestly. Fact-check instructions are locally editable in **Settings → System prompts**; tool restrictions remain enforced.
+
+**Copy trusted full-MCP task** connects an external agent to the entire local MCP interface—including other courses, profile, sharing and settings. Use this only with a trusted agent. **Build with agent** uses a restricted, course-scoped session instead.
+
+Course saves are atomic and validate question structure, per-option explanations, references, and recorded quantity/coverage requirements. Settings contains model selection, automatic question imports, and opt-in local debug logging. Debug logs include tool outcomes and content hashes, not prompts, credentials, transcripts, or model responses.
 
 ## Storage and privacy
 

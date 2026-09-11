@@ -6,6 +6,8 @@ export type DomainId = string;
 export type Choice = "A" | "B" | "C" | "D";
 
 export type ExamQuestion = {
+  contentHash?: string;
+  qaReview?: import("./question-review").QuestionReview | null;
   id: number;
   bankId: string;
   chapter: string;

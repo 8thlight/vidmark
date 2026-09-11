@@ -2,10 +2,12 @@
 
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { BarChart3, Check, ChevronLeft, ChevronRight, CirclePause, CirclePlay, Clock3, Eye, Flag, ListChecks, Network, RotateCcw, TimerReset, Trophy } from "lucide-react";
+import { QuestionFactCheck } from "./agent-task";
 import { type ExamQuestion } from "./exam-data";
 import bundledConceptGraph from "../data/concept-graph.json";
 import type { ConceptGraph } from "./concept-graph-types";
-import { getCourseConceptGraph } from "./vidmark-client";
+import { getCourseConceptGraph, getCourseQuestions } from "./vidmark-client";
+import { mergeQuestionReviewState } from "./question-review";
 import {
   ActiveExam,
   buildAttempt,
@@ -216,6 +218,10 @@ export function ExamMode({ questionBank, courseId, courseName = "Course practice
                 return <button key={choice} type="button" className={`${response?.selected === choice ? "selected" : ""} ${activeStudyAid === "all" ? "answer-explained" : ""} ${showCorrect ? "answer-correct" : ""} ${showTempting ? "answer-tempting" : ""}`} onClick={() => selectChoice(choice)}><i>{response?.selected === choice ? <Check aria-hidden="true" /> : null}</i><b>{choice}</b><span>{text}{activeStudyAid === "all" && <small className="exam-option-rationale"><em>{showCorrect ? "Correct" : showTempting ? "Tempting, but not best" : "Not the best answer"}</em>{activeQuestion.rationales[choice]}</small>}</span></button>;
               })}
             </div>
+            <QuestionFactCheck key={`${courseId}:${activeQuestion.bankId}:${activeQuestion.contentHash}`} courseId={courseId} questionId={activeQuestion.bankId} contentHash={activeQuestion.contentHash ?? ""} review={activeQuestion.qaReview} onComplete={async () => {
+              const latest = await getCourseQuestions(courseId, questionBank);
+              setExam(current => current ? { ...current, questionSnapshot: mergeQuestionReviewState(current.questionSnapshot ?? examQuestionsFromIds(current.questionIds, questionBank), latest) } : current);
+            }} />
             <footer className="exam-question-controls">
               <button type="button" onClick={() => goTo(exam.currentIndex - 1)} disabled={exam.currentIndex === 0}><ChevronLeft aria-hidden="true" /> Back</button>
               <button type="button" className={exam.flaggedIds.includes(activeQuestion.id) ? "flagged" : ""} onClick={toggleFlag}><Flag aria-hidden="true" />{exam.flaggedIds.includes(activeQuestion.id) ? "Flagged" : "Flag for review"}</button>
@@ -223,7 +229,7 @@ export function ExamMode({ questionBank, courseId, courseName = "Course practice
             </footer>
           </section>
           <aside className="exam-navigator">
-            <section><h2>Question navigator</h2><div className="navigator-legend"><span><i className="answered" />Answered</span><span><i className="current" />Current</span><span><Flag aria-hidden="true" />Flagged</span></div><div className="question-grid">{questions.map((question, index) => <button type="button" key={question.id} onClick={() => goTo(index)} className={`${exam.currentIndex === index ? "current" : ""} ${exam.responses.some((item) => item.questionId === question.id) ? "answered" : ""} ${exam.flaggedIds.includes(question.id) ? "flagged" : ""}`}>{index + 1}</button>)}</div></section>
+            <section><h2>Question navigator</h2><div className="navigator-legend"><span><i className="answered" />Answered</span><span><i className="current" />Current</span><span><Flag aria-hidden="true" />Flagged</span></div><div className="question-grid">{questions.map((question, index) => <button type="button" key={question.id} onClick={() => goTo(index)} className={`${exam.currentIndex === index ? "current" : ""} ${exam.responses.some((item) => item.questionId === question.id) ? "answered" : ""} ${exam.flaggedIds.includes(question.id) ? "flagged" : ""}`}>{index + 1}{question.qaReview?.outcome !== "reviewed" ? "*" : ""}</button>)}</div></section>
             <section className="exam-distribution"><h2>Domain distribution</h2>{domainOrder.map((domain) => <div key={domain}><span><b>{domains[domain]?.short ?? domain}</b><strong>{domains[domain].weight}%</strong></span><i><em style={{ width: `${domains[domain].weight * 3.2}%` }} /></i></div>)}<p>{isCca ? "Selected by published blueprint weight." : "Topic percentages describe this local bank, not an official exam blueprint."} Single-answer practice scenarios.</p></section>
             <button className="submit-link" type="button" onClick={() => setShowSubmit(true)}>Finish and score exam</button>
           </aside>

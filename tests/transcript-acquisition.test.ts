@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { parseJson3Transcript, youtubeVideoId } from "../scripts/transcript-acquisition";
+import { acquireYouTubeTranscript, parseJson3Transcript, youtubeVideoId } from "../scripts/transcript-acquisition";
 
 describe("course transcript acquisition", () => {
+  test("a cancelled build does not begin transcript acquisition", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("Build cancelled"));
+    await expect(acquireYouTubeTranscript("_4uQI4ihGVU", "en", controller.signal)).rejects.toThrow("Build cancelled");
+  });
   test("extracts a YouTube video ID only from supported sources", () => {
     expect(youtubeVideoId("_4uQI4ihGVU")).toBe("_4uQI4ihGVU");
     expect(youtubeVideoId("https://www.youtube.com/watch?v=_4uQI4ihGVU")).toBe("_4uQI4ihGVU");

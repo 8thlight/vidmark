@@ -8,7 +8,7 @@ export type McpCourseSnapshot = {
   sourceUrl?: string;
   originPrompt: string;
   promptCredit: string;
-  transcript: TranscriptCue[];
+  transcript?: TranscriptCue[];
 };
 
 export type McpNoteSnapshot = {

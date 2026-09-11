@@ -123,11 +123,11 @@ const chooseTrack = (tracks: CaptionTrack[], preferredLanguage: string) => {
   })[0];
 };
 
-const fetchText = async (url: URL, label: string) => {
+const fetchText = async (url: URL, label: string, signal?: AbortSignal) => {
   const response = await fetch(url, {
     headers: { "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.8", "Cache-Control": "no-cache", "User-Agent": youtubeUserAgent },
     redirect: "follow",
-    signal: AbortSignal.timeout(30_000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
   });
   if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}.`);
   const declaredLength = Number(response.headers.get("content-length") ?? 0);
@@ -147,13 +147,13 @@ const decodeCaptionText = (value: string) => value
   .replace(/\s+/g, " ")
   .trim();
 
-const downloadCaptionTrack = async (track: CaptionTrack) => {
+const downloadCaptionTrack = async (track: CaptionTrack, signal?: AbortSignal) => {
   if (!track.baseUrl) return [];
   const captionUrl = new URL(track.baseUrl);
   const captionHost = captionUrl.hostname.toLowerCase();
   if (captionUrl.protocol !== "https:" || (captionHost !== "youtube.com" && !captionHost.endsWith(".youtube.com"))) throw new Error("YouTube returned an unexpected caption source.");
   captionUrl.searchParams.set("fmt", "json3");
-  const jsonText = await fetchText(captionUrl, "YouTube caption track");
+  const jsonText = await fetchText(captionUrl, "YouTube caption track", signal);
   if (jsonText.trim()) {
     try {
       const cues = parseJson3Transcript(JSON.parse(jsonText) as Json3Caption);
@@ -161,7 +161,7 @@ const downloadCaptionTrack = async (track: CaptionTrack) => {
     } catch { /* Try the XML representation below. */ }
   }
   captionUrl.searchParams.delete("fmt");
-  const xml = await fetchText(captionUrl, "YouTube caption track");
+  const xml = await fetchText(captionUrl, "YouTube caption track", signal);
   const cues: TranscriptCue[] = [];
   for (const match of xml.matchAll(/<text\b[^>]*\bstart="([0-9.]+)"[^>]*>([\s\S]*?)<\/text>/g)) {
     const time = Number(match[1]);
@@ -171,7 +171,7 @@ const downloadCaptionTrack = async (track: CaptionTrack) => {
   return cues;
 };
 
-const acquireFromAndroidPlayer = async (page: string, videoId: string, preferredLanguage: string) => {
+const acquireFromAndroidPlayer = async (page: string, videoId: string, preferredLanguage: string, signal?: AbortSignal) => {
   const configStart = page.indexOf("ytcfg.set({");
   const configJson = configStart < 0 ? null : extractJsonObject(page.slice(configStart + "ytcfg.set(".length), "");
   if (!configJson) return null;
@@ -185,14 +185,14 @@ const acquireFromAndroidPlayer = async (page: string, videoId: string, preferred
     method: "POST",
     headers: { "Accept": "application/json", "Content-Type": "application/json", "User-Agent": youtubeUserAgent },
     body: JSON.stringify({ context: { client: { clientName: "ANDROID", clientVersion: "20.10.38", hl: preferredLanguage || "en" } }, videoId }),
-    signal: AbortSignal.timeout(30_000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
   });
   if (!response.ok) return null;
   const payload = await response.json() as { captions?: { playerCaptionsTracklistRenderer?: { captionTracks?: CaptionTrack[] } } };
   const tracks = payload.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
   const track = chooseTrack(tracks.filter((candidate) => candidate.baseUrl), preferredLanguage);
   if (!track) return null;
-  const cues = await downloadCaptionTrack(track);
+  const cues = await downloadCaptionTrack(track, signal);
   return cues.length ? { track, cues } : null;
 };
 
@@ -217,7 +217,7 @@ const parseTranscriptEndpoint = (payload: unknown): TranscriptCue[] => {
   return cues.toSorted((left, right) => left.time - right.time);
 };
 
-const acquireFromTranscriptEndpoint = async (page: string, watchUrl: URL) => {
+const acquireFromTranscriptEndpoint = async (page: string, watchUrl: URL, signal?: AbortSignal) => {
   const configStart = page.indexOf("ytcfg.set({");
   const configJson = configStart < 0 ? null : extractJsonObject(page.slice(configStart + "ytcfg.set(".length), "");
   const paramsMatch = page.match(/"getTranscriptEndpoint":\{"params":("(?:\\.|[^"\\])*")/);
@@ -263,7 +263,7 @@ const acquireFromTranscriptEndpoint = async (page: string, watchUrl: URL) => {
       method: "POST",
       headers,
       body: JSON.stringify({ context: { ...config.INNERTUBE_CONTEXT, client: { ...existingClient, originalUrl: watchUrl.toString() } }, params: parameterValue }),
-      signal: AbortSignal.timeout(30_000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
       if (process.env.VIDMARK_TRANSCRIPT_DEBUG === "1") console.error("Vidmark transcript endpoint failed.", response.status, await response.text());
@@ -277,13 +277,14 @@ const acquireFromTranscriptEndpoint = async (page: string, watchUrl: URL) => {
   return null;
 };
 
-export const acquireYouTubeTranscript = async (videoUrlOrId: string, preferredLanguage = "en") => {
+export const acquireYouTubeTranscript = async (videoUrlOrId: string, preferredLanguage = "en", signal?: AbortSignal) => {
+  signal?.throwIfAborted();
   const videoId = youtubeVideoId(videoUrlOrId);
   const watchUrl = new URL("https://www.youtube.com/watch");
   watchUrl.searchParams.set("v", videoId);
   watchUrl.searchParams.set("hl", preferredLanguage || "en");
-  const page = await fetchText(watchUrl, "YouTube video page");
-  const android = await acquireFromAndroidPlayer(page, videoId, preferredLanguage);
+  const page = await fetchText(watchUrl, "YouTube video page", signal);
+  const android = await acquireFromAndroidPlayer(page, videoId, preferredLanguage, signal);
   if (android) return {
     videoId,
     language: android.track.languageCode ?? preferredLanguage,
@@ -293,7 +294,7 @@ export const acquireYouTubeTranscript = async (videoUrlOrId: string, preferredLa
     acquiredAt: new Date().toISOString(),
     cues: android.cues,
   };
-  const endpointCues = await acquireFromTranscriptEndpoint(page, watchUrl);
+  const endpointCues = await acquireFromTranscriptEndpoint(page, watchUrl, signal);
   if (endpointCues?.length) return {
     videoId,
     language: preferredLanguage || "en",
@@ -311,7 +312,7 @@ export const acquireYouTubeTranscript = async (videoUrlOrId: string, preferredLa
   const track = chooseTrack(tracks.filter((candidate) => candidate.baseUrl), preferredLanguage);
   if (!track?.baseUrl) throw new Error("YouTube did not expose a usable public caption track for this video.");
 
-  const cues = await downloadCaptionTrack(track);
+  const cues = await downloadCaptionTrack(track, signal);
   if (!cues.length) throw new Error("The selected YouTube caption track contained no usable timestamped cues.");
   return {
     videoId,

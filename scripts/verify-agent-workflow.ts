@@ -16,13 +16,14 @@ const fakeModel = Bun.serve({ hostname: "127.0.0.1", port: 33428, async fetch(re
   const url = new URL(request.url);
   if (url.pathname === "/v1/models") return Response.json({ data: [{ id: "vidmark-fake-agent" }] });
   if (url.pathname === "/v1/chat/completions") {
-    const input = await request.json() as { tools?: Array<{ function?: { name?: string } }> };
+    const input = await request.json() as { messages?: Array<{ role: string; content?: string }>; tools?: Array<{ function?: { name?: string } }> };
+    if (input.messages?.some(m => m.role === "tool" && m.content?.includes('"saved":'))) return Response.json({ choices: [{ message: { role: "assistant", content: "Saved; questions have not been QA reviewed." } }] });
     const toolName = input.tools?.find((tool) => tool.function?.name === "save_course_build") ? "save_course_build" : "confirm_vidmark_connection";
     const argumentsJson = toolName === "save_course_build" ? JSON.stringify({
       studyGuide: "The in-app coordinator saved this course directly to SQLite.",
       researchNotes: "Verified with a deterministic OpenAI-compatible model fixture.",
       chapters: [{ id: "workflow", title: "Agent workflow", start: 0, summary: "Create, build, and share a SQLite-backed course.", tags: ["mcp", "sharing"] }],
-      questions: [{ id: "workflow-001", sectionId: "workflow", domainId: "tools", difficulty: "foundational", mode: "standard", scenario: "A learner wants Claude to build a course.", question: "Which integration should it use?", options: { A: { text: "Local MCP", rationale: "Correct." }, B: { text: "Relay DB", rationale: "Incorrect." }, C: { text: "Iframe", rationale: "Incorrect." }, D: { text: "Legacy JSON", rationale: "Incorrect." } }, correctAnswer: "A", grading: { temptingDistractor: "B", principle: "Use MCP.", missType: "judgment", hinge: "MCP exposes the tools." }, videoReferences: [], sources: [], tags: ["mcp"] }],
+      questions: [{ id: "workflow-001", sectionId: "workflow", domainId: "tools", difficulty: "foundational", mode: "standard", scenario: "A learner wants Claude to build a course.", question: "Which integration should it use?", options: { A: { text: "Local MCP", rationale: "Correct." }, B: { text: "Relay DB", rationale: "Incorrect." }, C: { text: "Iframe", rationale: "Incorrect." }, D: { text: "Legacy JSON", rationale: "Incorrect." } }, correctAnswer: "A", grading: { temptingDistractor: "B", principle: "Use MCP.", missType: "judgment", hinge: "MCP exposes the tools." }, videoReferences: [{ timestampSeconds: 12, label: "Transcript evidence" }], sources: [], tags: ["mcp"] }],
       conceptGraph: { schemaVersion: "1.0.0", graphId: "agent-workflow", title: "Agent workflow graph", nodes: [{ id: "workflow-domain", label: "Agent workflow", kind: "domain", domainId: "workflow", summary: "The workflow." }, { id: "mcp-concept", label: "Local MCP", kind: "concept", domainId: "workflow", summary: "Claude's Vidmark interface." }], edges: [{ source: "workflow-domain", target: "mcp-concept", type: "contains", weight: 1, rationale: "The workflow uses MCP." }] },
     }) : JSON.stringify({ ready: true });
     return Response.json({ choices: [{ message: { role: "assistant", content: null, tool_calls: [{ id: crypto.randomUUID(), type: "function", function: { name: toolName, arguments: argumentsJson } }] } }] });
@@ -55,6 +56,9 @@ const toolText = (result: Record<string, unknown>) => {
 try {
   await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "vidmark-agent-verifier", version: "1.0.0" } });
   const tools = await request("tools/list");
+  const reviewTool = (tools.tools as Array<{ name: string; inputSchema: { properties: { review?: { properties: { notes: { minLength: number; maxLength: number }; evidence: { maxItems: number } } } } } }>).find(tool => tool.name === "record_question_review");
+  const reviewSchema = reviewTool?.inputSchema.properties.review?.properties;
+  if (reviewSchema?.notes.minLength !== 20 || reviewSchema.notes.maxLength !== 12000 || reviewSchema.evidence.maxItems !== 30) throw new Error("The advertised QA schema does not match the fact-check runtime contract.");
   const toolNames = new Set((tools.tools as Array<{ name: string }>).map((tool) => tool.name));
   for (const required of ["upsert_course", "replace_transcript", "acquire_course_transcript", "save_course_build", "share_course_with_user", "review_course_invite"]) {
     if (!toolNames.has(required)) throw new Error(`Required MCP tool ${required} is missing.`);
@@ -81,13 +85,37 @@ try {
   const chapters = [{ id: "workflow", title: "Agent workflow", start: 0, summary: "Create, build, and share a SQLite-backed course.", tags: ["mcp", "sharing"] }];
   const questions = [{ id: "workflow-001", enabled: true, sectionId: "workflow", domainId: "tools", difficulty: "foundational", mode: "standard", scenario: "A learner has Vidmark open and wants Claude Code to build the imported course.", question: "What should Claude connect to?", options: { A: { text: "The local Vidmark MCP endpoint", rationale: "It exposes the course prompt and SQLite-backed tools." }, B: { text: "The public relay database", rationale: "The relay does not expose local course-authoring tools." }, C: { text: "The YouTube player iframe", rationale: "The iframe is not an agent tool." }, D: { text: "The legacy JSON file", rationale: "SQLite is the active data store." } }, correctAnswer: "A", grading: { temptingDistractor: "B", principle: "Use the local MCP boundary for agent actions.", missType: "judgment", hinge: "The course and write tools are local." }, videoReferences: [{ timestampSeconds: 12, label: "Claude orchestration" }], sources: [], tags: ["mcp"] }];
   const graph = { schemaVersion: "1.0.0", graphId: "agent-workflow", title: "Agent workflow graph", nodes: [{ id: "workflow-domain", label: "Agent workflow", kind: "domain", domainId: "workflow", summary: "The end-to-end workflow." }, { id: "mcp-concept", label: "Local MCP", kind: "concept", domainId: "workflow", summary: "Claude's interface to Vidmark." }], edges: [{ source: "workflow-domain", target: "mcp-concept", type: "contains", weight: 1, rationale: "The workflow uses local MCP." }] };
-  const saved = toolText(await request("tools/call", { name: "save_course_build", arguments: { courseId, studyGuide: "Open Vidmark, import a transcript, connect Claude Code to local MCP, run the build prompt, then review and share the result.", researchNotes: "Acceptance artifact generated from the imported transcript.", chaptersJson: JSON.stringify(chapters), questionsJson: JSON.stringify(questions), conceptGraphJson: JSON.stringify(graph) } }));
+  await request("tools/call", { name: "set_course_build_requirements", arguments: { courseId, requirements: { questionCount: 1, chapterIds: ["workflow"] } } });
+  const expectedCourseRevision = toolText(await request("tools/call", { name: "get_course", arguments: { courseId } })).revision;
+  const saved = toolText(await request("tools/call", { name: "save_course_build", arguments: { courseId, expectedCourseRevision, studyGuide: "Open Vidmark, import a transcript, connect Claude Code to local MCP, run the build prompt, then review and share the result.", researchNotes: "Acceptance artifact generated from the imported transcript.", chaptersJson: JSON.stringify(chapters), questionsJson: JSON.stringify(questions), conceptGraphJson: JSON.stringify(graph) } }));
   if (saved.saved !== courseId) throw new Error("The MCP build did not report a successful save.");
 
   const course = service.store.getCourse(courseId);
   if (!course?.studyGuide || course.chapters.length !== 1 || course.questions.length !== 1 || course.conceptGraph?.graphId !== "agent-workflow") throw new Error("The completed MCP build was not persisted as one complete SQLite course.");
+  const initialQuestion = service.store.getQuestion(courseId, "workflow-001")!;
+  if (initialQuestion.qaReview) throw new Error("New questions must not claim QA.");
+  const reviewSession = toolText(await request("tools/call", { name: "start_question_review", arguments: { courseId, questionId: initialQuestion.id, reviewer: "MCP acceptance verifier" } }));
+  const evidence = toolText(await request("tools/call", { name: "get_question_review_evidence", arguments: { reviewSessionId: reviewSession.reviewSessionId, source: { type: "transcript" } } }));
+  const unverified = await request("tools/call", { name: "record_question_review", arguments: { courseId, questionId: initialQuestion.id, expectedRevision: initialQuestion.revision, review: { contentHash: initialQuestion.contentHash, reviewer: "MCP acceptance verifier", outcome: "reviewed", notes: "Unverified evidence must be rejected.", evidence: ["Fabricated"] } } });
+  if (!unverified.isError) throw new Error("General MCP accepted a review without an evidence session.");
+  const shortReview = await request("tools/call", { name: "record_question_review", arguments: { reviewSessionId: reviewSession.reviewSessionId, courseId, questionId: initialQuestion.id, expectedRevision: initialQuestion.revision, review: { contentHash: initialQuestion.contentHash, reviewer: "MCP acceptance verifier", outcome: "reviewed", notes: "Too short", evidence: [evidence.evidenceId] } } });
+  if (!shortReview.isError) throw new Error("General MCP accepted reasoning shorter than its advertised minimum.");
+  const reviewResult = await request("tools/call", { name: "record_question_review", arguments: { reviewSessionId: reviewSession.reviewSessionId, courseId, questionId: initialQuestion.id, expectedRevision: initialQuestion.revision, review: { contentHash: initialQuestion.contentHash, reviewer: "MCP acceptance verifier", outcome: "reviewed", notes: "Checked all options against the test transcript.", evidence: [evidence.evidenceId] } } });
+  if (reviewResult.isError || service.store.getQuestion(courseId, initialQuestion.id)?.qaReview?.outcome !== "reviewed") throw new Error("MCP QA did not persist.");
+  const history = toolText(await request("tools/call", { name: "get_question_reviews", arguments: { courseId, questionId: initialQuestion.id } }));
+  if (!Array.isArray(history.reviews) || history.reviews.length !== 1) throw new Error("MCP QA history was not readable.");
+  const staleReview = await request("tools/call", { name: "record_question_review", arguments: { courseId, questionId: initialQuestion.id, expectedRevision: initialQuestion.revision + 2, review: { reviewer: "MCP acceptance verifier", outcome: "reviewed", notes: "Stale revision.", evidence: ["Transcript"] } } });
+  if (!staleReview.isError) throw new Error("A stale QA review was accepted.");
+  const staleSync = await fetch(`${origin}/state/sync`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ activeCourseId: courseId, courses: [{ id: courseId, title: "Stale browser title", transcript: [] }] }) });
+  if (!staleSync.ok || service.store.getCourse(courseId)?.transcript.length !== 3) throw new Error("A stale browser snapshot erased the transcript.");
+  const explicitImport = await fetch(`${origin}/api/transcript`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ courseId, cues: course.transcript }) });
+  if (!explicitImport.ok) throw new Error("An explicit UI transcript import failed.");
 
   const providerSettings = await fetch(`${providerOrigin}/settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: "local", baseUrl: "http://127.0.0.1:33428/v1", model: "vidmark-fake-agent" }) });
+  const diagnosticsBefore = await (await fetch(`${providerOrigin}/diagnostics`)).json() as { enabled: boolean };
+  if (diagnosticsBefore.enabled) throw new Error("Diagnostics must default off.");
+  const diagnosticsEnabled = await fetch(`${providerOrigin}/diagnostics`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: true }) });
+  if (!diagnosticsEnabled.ok) throw new Error("Debug mode could not be enabled.");
   if (!providerSettings.ok) throw new Error(`The in-app provider could not be configured: ${await providerSettings.text()}`);
   const started = await (await fetch(`${providerOrigin}/build`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ courseId }) })).json() as { id: string };
   let job: { status?: string; error?: string } = {};
@@ -97,6 +125,8 @@ try {
     await Bun.sleep(20);
   }
   if (job.status !== "complete") throw new Error(`The in-app coordinator did not save the course: ${job.error ?? job.status ?? "unknown status"}`);
+  const diagnosticResult = await (await fetch(`${providerOrigin}/diagnostics`)).json() as { entries: Array<{ event: string }> };
+  if (!diagnosticResult.entries.some(entry => entry.event === "build.complete")) throw new Error("The completed build did not appear in debug logs.");
   const inAppCourse = service.store.getCourse(courseId);
   if (inAppCourse?.studyGuide !== "The in-app coordinator saved this course directly to SQLite." || inAppCourse.conceptGraph?.graphId !== "agent-workflow") throw new Error("The in-app coordinator did not persist its result to the shared SQLite database.");
 
