@@ -109,6 +109,25 @@ test("graph and archive writes roll back when the course metadata write fails", 
   } finally { db.db.exec("DROP TRIGGER reject_course_touch"); }
 });
 
+test("sharing exports every question beyond the API page limit, including archived QA", () => {
+  const id = "unpaged-export";
+  db.upsertCourse({ id, title: "Full export", sourceUrl: "https://example.com" });
+  db.replaceQuestions(id, Array.from({ length: 1002 }, (_, i) => ({ ...question, id: `export-${i}`, question: `Question ${i}?` })));
+  const reviewed = db.getQuestion(id, "export-1001")!;
+  db.reviewQuestion(id, reviewed.id, reviewed.revision, { ...review, contentHash: reviewed.contentHash }, "mcp");
+  db.archiveQuestion(id, reviewed.id);
+  const bundle = db.exportCourseBundle(id);
+  expect(bundle.course.questions).toHaveLength(1002);
+  expect(bundle.course.questions.at(-1)).toMatchObject({ archived: true, qaReview: { outcome: "reviewed" } });
+  const peer = new VidmarkDatabase(join(dir, "large-export-peer.sqlite"));
+  try {
+    peer.importCourseBundle(bundle);
+    expect(peer.listQuestions(id, { includeArchived: true }).total).toBe(1002);
+    expect(peer.getQuestion(id, reviewed.id)).toMatchObject({ archived: true, qaReview: { outcome: "reviewed", shared: true } });
+    expect(peer.getQuestionReviews(id, reviewed.id)).toHaveLength(1);
+  } finally { peer.close(); }
+});
+
 test("duplicate question detection normalizes case and whitespace before committing", () => {
   db.upsertCourse({ id: "duplicates", title: "Duplicates", sourceUrl: "https://example.com", studyGuide: "Original" });
   db.setBuildRequirements("duplicates", { questionCount: 2 });
@@ -125,6 +144,8 @@ test("instructions preserve identity, make QA optional, and contain no model cat
   expect(prompts).toContain("QA is optional");
   expect(prompts).toContain("Preserve the subject");
   expect(prompts).toContain("caption");
+  expect(prompts).toContain("author self-review");
+  expect(prompts).toContain("not independently authenticated reviewer identity");
   expect(prompts).not.toMatch(/(?:gpt-\d|qwen\d|claude-\d|sonnet|opus|haiku|terra|luna)/i);
 });
 

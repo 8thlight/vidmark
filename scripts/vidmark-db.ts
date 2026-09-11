@@ -404,10 +404,13 @@ export class VidmarkDatabase {
   }
 
   setBuildRequirements(courseId: string, input: BuildRequirements) {
-    if (!this.getCourse(courseId)) throw new Error("Course not found.");
     const requirements = buildRequirementsSchema.parse(input);
-    this.db.query("INSERT INTO course_build_requirements VALUES (?,?) ON CONFLICT(course_id) DO UPDATE SET payload_json=excluded.payload_json").run(courseId, json(requirements));
-    return requirements;
+    return this.db.transaction(() => {
+      if (!this.getCourse(courseId)) throw new Error("Course not found.");
+      this.db.query("INSERT INTO course_build_requirements VALUES (?,?) ON CONFLICT(course_id) DO UPDATE SET payload_json=excluded.payload_json").run(courseId, json(requirements));
+      this.touchCourse(courseId);
+      return requirements;
+    }).immediate();
   }
 
   getBuildRequirements(courseId: string): BuildRequirements {
@@ -415,11 +418,12 @@ export class VidmarkDatabase {
     return row ? parseJson(row.payload_json, {}) : {};
   }
 
-  saveCourseBuild(courseId: string, input: { studyGuide?: string; researchNotes?: string; chapters?: unknown[]; questions?: unknown[]; conceptGraph?: unknown }, singleQuestionUpdate?: { id: string; expectedRevision: number }) {
+  saveCourseBuild(courseId: string, input: { expectedCourseRevision?: number; studyGuide?: string; researchNotes?: string; chapters?: unknown[]; questions?: unknown[]; conceptGraph?: unknown }, singleQuestionUpdate?: { id: string; expectedRevision: number }) {
     return this.db.transaction(() => {
       for (const field of ["studyGuide", "researchNotes"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || !input[field].trim())) throw new Error(`${field} must be a non-empty string.`);
       const course = this.getCourse(courseId);
       if (!course) throw new Error("Course not found.");
+      if (input.expectedCourseRevision !== undefined && course.revision !== input.expectedCourseRevision) throw new Error("Course revision conflict. Read the current course before rebuilding. No artifacts saved.");
       const chapters = input.chapters?.map(chapter => chapterSchema.parse(chapter));
       const questions = input.questions?.map(validateQuestion);
       const graph = input.conceptGraph === undefined ? undefined : validateConceptGraph(input.conceptGraph);
@@ -455,7 +459,7 @@ export class VidmarkDatabase {
       if (graph) this.saveConceptGraph(courseId, graph);
       const activeRows = this.db.query(`SELECT q.*, r.payload_hash AS qa_payload_hash, r.review_json AS qa_review_json FROM questions q LEFT JOIN question_reviews r ON r.course_id=q.course_id AND r.question_id=q.id WHERE q.course_id=? AND q.archived=0`).all(courseId) as Array<Record<string, unknown>>;
       return { saved: courseId, chapters: chapters?.length, questions: questions?.length, revision: this.getCourse(courseId)?.revision, unreviewed: activeRows.filter(row => this.questionFromRow(row).qaReview?.outcome !== "reviewed").length };
-    })();
+    }).immediate();
   }
 
   reviewQuestion(courseId: string, questionId: string, expectedRevision: number, input: unknown, via: QuestionReview["via"], expectedTranscriptHash?: string) {
@@ -765,9 +769,12 @@ export class VidmarkDatabase {
   }
 
   exportCourseBundle(courseId: string) {
-    const course = this.getCourse(courseId);
-    if (!course) throw new Error(`Course ${courseId} was not found.`);
-    return { version: 2, exportedAt: now(), course };
+    return this.db.transaction(() => {
+      const course = this.getCourse(courseId);
+      if (!course) throw new Error(`Course ${courseId} was not found.`);
+      const rows = this.db.query("SELECT q.*, r.payload_hash AS qa_payload_hash, r.review_json AS qa_review_json FROM questions q LEFT JOIN question_reviews r ON r.course_id=q.course_id AND r.question_id=q.id WHERE q.course_id=? ORDER BY q.position").all(courseId) as Array<Record<string, unknown>>;
+      return { version: 2, exportedAt: now(), course: { ...course, questions: rows.map(row => this.questionFromRow(row)) } };
+    })();
   }
 
   importCourseBundle(bundle: Record<string, unknown>, options: { visibility?: "private" | "public"; globalVersion?: number; globalOwnerDeviceId?: string; globalLocked?: boolean } = {}) {

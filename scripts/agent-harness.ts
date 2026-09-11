@@ -119,7 +119,7 @@ export async function runCli(executable: string, args: string[], options: Comman
 }
 
 // Metadata-only handshakes: neither sends a user turn or consumes model tokens.
-async function readCliModels(id: CliHarness, executable: string, signal?: AbortSignal): Promise<HarnessModel[]> {
+export async function readCliModels(id: CliHarness, executable: string, signal?: AbortSignal): Promise<HarnessModel[]> {
   signal?.throwIfAborted();
   const args = id === "codex" ? ["app-server"] : ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", ""];
   const child = await startCli(executable, args);

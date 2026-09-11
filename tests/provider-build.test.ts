@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VidmarkDatabase, STARTER_COURSE_ID } from "../scripts/vidmark-db";
-import { runBuild, settleAgentTask, startModelProviderServer } from "../scripts/model-provider";
+import { normalizeBaseUrl, runBuild, settleAgentTask, startModelProviderServer } from "../scripts/model-provider";
 import { type BuildJob } from "../scripts/cli-course-build";
 import { DebugLog } from "../scripts/debug-log";
 import { researchFetchResult } from "../scripts/research-fetch-result";
@@ -23,6 +23,26 @@ const jobFor = (id: string): BuildJob => {
 };
 const tool = (name: string, args: unknown) => ({ role: "assistant" as const, content: null, tool_calls: [{ id: crypto.randomUUID(), type: "function" as const, function: { name, arguments: JSON.stringify(args) } }] });
 const fetchResearch = (url: string) => researchFetchResult(url, async () => "Actual primary evidence");
+
+test("model hosts reject query strings, fragments and credentials before paths are appended", () => {
+  for (const suffix of ["?tenant=one", "#fragment", "?", "#"]) expect(() => normalizeBaseUrl(`http://localhost:11434/v1${suffix}`)).toThrow("query string or fragment");
+  expect(() => normalizeBaseUrl("http://user:secret@localhost/v1")).toThrow("credentials");
+  expect(normalizeBaseUrl(" http://localhost:11434/v1/chat/completions/ ")).toBe("http://localhost:11434/v1");
+});
+
+test("in-app complete builds preserve external course edits made during the model run", async () => {
+  const job = jobFor("provider-stale-course"); let turn = 0;
+  let before: ReturnType<typeof db.getCourse>, rejected: unknown;
+  await runBuild(job, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
+    fetchResearch, callModel: async (_settings, messages) => {
+      if (turn++ === 0) return tool("set_course_build_requirements", { questionCount: 1 });
+      if (turn === 2) { db.upsertCourse({ id: job.courseId, title: "Manual correction", studyGuide: "Keep my guide" }); before = db.getCourse(job.courseId); return tool("save_course_build", artifacts); }
+      rejected = JSON.parse(messages.at(-1)?.content ?? "{}"); throw new Error("Test finished");
+    },
+  });
+  expect(rejected).toMatchObject({ saved: false, validationError: expect.stringContaining("Course revision conflict") });
+  expect(db.getCourse(job.courseId)).toEqual(before!); expect(job.status).toBe("failed");
+});
 
 test("in-app QA validates reads and retrieved evidence, returns tool errors, and reads fresh saved counts", async () => {
   const job = jobFor("provider-qa");
@@ -77,7 +97,7 @@ test("model failure during optional QA does not mark persisted artifacts as a fa
 test("in-app builds reject missing, blank and non-string study artifacts before saving", async () => {
   for (const field of ["studyGuide", "researchNotes"] as const) for (const value of [undefined, "   ", 42, {}]) {
     const job = jobFor(`invalid-${field}-${JSON.stringify(value)}`);
-    const before = db.getCourse(job.courseId);
+    let before = db.getCourse(job.courseId);
     const results: unknown[] = [];
     let turn = 0;
     await runBuild(job, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
@@ -85,7 +105,7 @@ test("in-app builds reject missing, blank and non-string study artifacts before 
       callModel: async (_settings, messages) => {
         if (messages.at(-1)?.role === "tool") results.push(JSON.parse(messages.at(-1)?.content ?? "{}"));
         if (turn++ === 0) return tool("set_course_build_requirements", { questionCount: 1 });
-        if (turn === 2) return tool("save_course_build", { ...artifacts, [field]: value });
+        if (turn === 2) { before = db.getCourse(job.courseId); return tool("save_course_build", { ...artifacts, [field]: value }); }
         return { role: "assistant", content: "Done" };
       },
     });
@@ -147,7 +167,7 @@ test("in-app build QA rejects a previously retrieved transcript after replacemen
     },
   });
   expect(evidenceId).toMatch(/:[a-f0-9]{64}:0-1$/);
-  expect(rejection).toContain("Transcript evidence changed");
+  expect(rejection).toContain("Course revision conflict");
   expect(db.getQuestion(job.courseId, "q1")?.qaReview).toBeNull();
 });
 
@@ -179,7 +199,7 @@ test("in-app acquisition preserves a manual transcript imported while captions a
       throw new Error("Test finished");
     },
   });
-  expect(rejection).toContain("Transcript changed during acquisition");
+  expect(rejection).toContain("Course revision conflict");
   expect(db.getTranscript(job.courseId).cues).toEqual(manual);
 });
 
@@ -341,7 +361,7 @@ test("provider CORS follows the configured UI port unless explicitly overridden"
     }
     expect((await fetch(new URL("/settings", server.url), { headers: { Origin: "http://localhost:3011" } })).status).toBe(200);
     expect((await fetch(new URL("/settings", server.url), { headers: { Origin: "http://localhost:3010" } })).status).toBe(403);
-    process.env.VIDMARK_ALLOWED_ORIGINS = "http://localhost:3999";
+    process.env.VIDMARK_ALLOWED_ORIGINS = " http://127.0.0.1:3999, http://localhost:3999, ";
     expect((await fetch(new URL("/settings", server.url), { headers: { Origin: "http://localhost:3999" } })).status).toBe(200);
     expect((await fetch(new URL("/settings", server.url), { headers: { Origin: "http://localhost:3011" } })).status).toBe(403);
   } finally {

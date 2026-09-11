@@ -1,8 +1,8 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdtemp, stat, rm, mkdir } from "node:fs/promises";
+import { mkdtemp, stat, rm, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { authenticationState, cliEventState, cliSearchDirectories, courseCliArguments, discoverHarness, findCli, readAgentPreferences, requiredCliFlags, resolveAgentModel, runCli, writeAgentPreferences } from "../scripts/agent-harness";
+import { authenticationState, cliEventState, cliSearchDirectories, courseCliArguments, discoverHarness, findCli, readAgentPreferences, readCliModels, requiredCliFlags, resolveAgentModel, runCli, writeAgentPreferences } from "../scripts/agent-harness";
 import { createCourseAgentSession } from "../scripts/course-agent-session";
 import { VidmarkDatabase, STARTER_COURSE_ID } from "../scripts/vidmark-db";
 import { DebugLog } from "../scripts/debug-log";
@@ -31,6 +31,43 @@ async function rpc(url: string, method: string, params: Record<string, unknown> 
   const message = JSON.parse(body.split("\n").find(line => line.startsWith("data: "))?.slice(6) ?? body);
   return message.result ?? message;
 }
+
+test("real child-process catalog handshakes parse Codex pages and Claude control responses", async () => {
+  const file = join(root, "catalog-fixture");
+  const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  await writeFile(`${file}.mjs`, await readFile(new URL("./fixtures/model-catalog-cli.mjs", import.meta.url), "utf8"));
+  await writeFile(file, `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(`${file}.mjs`)} "$@"\n`, { mode: 0o700 });
+  expect(await readCliModels("codex", file)).toEqual([{ id: "fixture-default", label: "Fixture Default", isDefault: true }, { id: "fixture-other", label: "Fixture Other", isDefault: false }]);
+  expect(await readCliModels("claude", file)).toEqual([{ id: "fixture-claude", label: "Fixture Claude" }]);
+});
+
+test("scoped complete builds reject another writer's edits made while authoring", async () => {
+  const id = "build-stale-course"; makeCourse(id);
+  const session = createCourseAgentSession(db, id, {}, async () => ({}), () => {});
+  const call = (name: string, args: Record<string, unknown>) => rpc(session.url, "tools/call", { name, arguments: { courseId: id, ...args } });
+  try {
+    await call("set_course_build_requirements", { requirements: { questionCount: 1 } });
+    await call("get_course", {});
+    db.upsertCourse({ id, title: "User correction", studyGuide: "Keep this guide" });
+    const before = db.getCourse(id);
+    const result = await call("save_course_build", artifacts);
+    expect(result.isError).toBe(true); expect(result.content[0].text).toContain("Course revision conflict");
+    expect(db.getCourse(id)).toEqual(before); expect(session.saved).toBe(false);
+  } finally { session.close(); }
+});
+
+test("owned caption acquisition advances the scoped build baseline and still permits its save", async () => {
+  const id = "build-owned-captions"; makeCourse(id);
+  db.upsertCourse({ id, title: "Video fixture", videoUrl: "https://youtu.be/o3CX_Y59_74" });
+  const session = createCourseAgentSession(db, id, {}, async () => ({}), () => {}, undefined, { acquireYouTubeTranscript: async () => ({ videoId: "o3CX_Y59_74", cues: [{ time: 0, text: "Test caption" }], sourceUrl: "https://youtube.com", language: "en", trackName: "Test", automaticallyGenerated: false, acquiredAt: new Date().toISOString() }) });
+  const call = (name: string, args: Record<string, unknown>) => rpc(session.url, "tools/call", { name, arguments: { courseId: id, ...args } });
+  try {
+    expect((await call("acquire_course_transcript", {})).isError).not.toBe(true);
+    expect((await call("set_course_build_requirements", { requirements: { questionCount: 1 } })).isError).not.toBe(true);
+    expect((await call("save_course_build", artifacts)).isError).not.toBe(true);
+    expect(session.saved).toBe(true);
+  } finally { session.close(); }
+});
 
 test("preferences migrate without changing local provider settings and remember each harness model", async () => {
   const file = join(root, "preferences.json");
@@ -152,7 +189,7 @@ test("scoped caption acquisition preserves a concurrent manual transcript import
   try {
     const result = await rpc(session.url, "tools/call", { name: "acquire_course_transcript", arguments: { courseId: id } });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("Transcript changed during acquisition");
+    expect(result.content[0].text).toContain("Course revision conflict");
     expect(db.getTranscript(id).cues).toEqual(manual);
   } finally { session.close(); }
 });
@@ -161,12 +198,12 @@ test("scoped post-save edits reach legacy questions beyond page 1000 and report 
   const id = "large-existing-bank";
   makeCourse(id);
   const bank = Array.from({ length: 1001 }, (_, index) => ({ ...fixture, id: `q${index}`, question: `Distinct question ${index}?` }));
+  db.upsertQuestion(id, { ...fixture, id: "archived", question: "Archive" }); db.archiveQuestion(id, "archived");
   const session = createCourseAgentSession(db, id, {}, async () => ({}), () => {});
   const call = (name: string, args: Record<string, unknown>) => rpc(session.url, "tools/call", { name, arguments: { courseId: id, ...args } });
   try {
     await call("set_course_build_requirements", { requirements: {} });
     expect((await call("save_course_build", { ...artifacts, questions: bank })).isError).not.toBe(true);
-    db.upsertQuestion(id, { ...fixture, id: "archived", question: "Archive" }); db.archiveQuestion(id, "archived");
     expect(JSON.parse((await call("get_course", {})).content[0].text).questionCount).toBe(1001);
     expect(db.listCourses().find(course => course.id === id)?.questions).toBe(1001);
     const target = db.getQuestion(id, "q1000")!;
@@ -192,14 +229,14 @@ test("discovery rejects every missing flag required by either CLI launch contrac
 test("scoped question edits preserve archived questions and review history; QA checks evidence", async () => {
   const id = "archive-preservation";
   makeCourse(id);
+  const archived = db.upsertQuestion(id, { ...fixture, id: "archived", question: "Archived question?" })!;
+  db.reviewQuestion(id, archived.id, archived.revision, { reviewer: "Agent", outcome: "reviewed", notes: "Checked evidence", evidence: ["https://example.com"], contentHash: archived.contentHash }, "mcp");
+  db.archiveQuestion(id, archived.id);
   const session = createCourseAgentSession(db, id, {}, async () => ({ ok: true, content: "Primary evidence" }), () => {});
   const call = (name: string, args: Record<string, unknown>) => rpc(session.url, "tools/call", { name, arguments: { courseId: id, ...args } });
   try {
     await call("set_course_build_requirements", { requirements: { questionCount: 1 } });
     await call("save_course_build", artifacts);
-    const archived = db.upsertQuestion(id, { ...fixture, id: "archived", question: "Archived question?" })!;
-    db.reviewQuestion(id, archived.id, archived.revision, { reviewer: "Agent", outcome: "reviewed", notes: "Checked evidence", evidence: ["https://example.com"], contentHash: archived.contentHash }, "mcp");
-    db.archiveQuestion(id, archived.id);
     const before = db.getQuestion(id, archived.id);
     const history = db.getQuestionReviews(id, archived.id);
     expect((await call("get_course_question", { questionId: archived.id })).isError).toBe(true);
@@ -235,9 +272,16 @@ test("scoped build MCP rejects transcript evidence replaced after the agent read
     const args = { questionId: "q1", expectedRevision: q.revision, review: { reviewer: "Agent", outcome: "reviewed", notes: "Read and checked the primary source.", evidence: [page.evidenceId], contentHash: q.contentHash } };
     const rejected = await call("record_question_review", args);
     expect(rejected.isError).toBe(true);
-    expect(rejected.content[0].text).toContain("Transcript evidence changed");
+    expect(rejected.content[0].text).toContain("Course revision conflict");
     const current = JSON.parse((await call("get_transcript", {})).content[0].text);
-    expect((await call("record_question_review", { ...args, review: { ...args.review, evidence: [current.evidenceId] } })).isError).not.toBe(true);
+    expect((await call("record_question_review", { ...args, review: { ...args.review, evidence: [current.evidenceId] } })).isError).toBe(true);
+    const fresh = createCourseAgentSession(db, id, {}, async () => ({}), () => {});
+    const retry = (name: string, input: Record<string, unknown>) => rpc(fresh.url, "tools/call", { name, arguments: { courseId: id, ...input } });
+    try {
+      await retry("get_course_question", { questionId: "q1" });
+      const evidence = JSON.parse((await retry("get_transcript", {})).content[0].text);
+      expect((await retry("record_question_review", { ...args, review: { ...args.review, evidence: [evidence.evidenceId] } })).isError).not.toBe(true);
+    } finally { fresh.close(); }
   } finally { session.close(); }
 });
 

@@ -4,6 +4,7 @@ import { questionSchema, chapterSchema, agentQuestionReviewSchema, buildRequirem
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { safeFetchUrl } from "./research-fetch";
 import { CourseReviewEvidence } from "./course-review-evidence";
+import { courseBuildRevision } from "./course-build-revision";
 import { dirname, join } from "node:path";
 import { composeCourseBuildPrompt } from "../app/course-prompts";
 import { getSystemPrompt, renderSystemPrompt } from "../app/system-prompts";
@@ -34,10 +35,11 @@ type ToolCall = { id: string; type: "function"; function: { name: string; argume
 
 const defaultSettings = (): ProviderSettings => ({ configured: false, provider: "local", baseUrl: "http://127.0.0.1:11434/v1", model: "", enableWebSearch: false, updatedAt: Date.now() });
 
-const normalizeBaseUrl = (value: string) => {
+export const normalizeBaseUrl = (value: string) => {
   const parsed = new URL(value.trim());
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("Model host must use http:// or https://.");
   if (parsed.username || parsed.password) throw new Error("Do not place credentials in the model host URL.");
+  if (parsed.search || parsed.hash || value.includes("?") || value.includes("#")) throw new Error("Model host URL must not contain a query string or fragment.");
   return parsed.toString().replace(/\/$/, "").replace(/\/chat\/completions$/, "");
 };
 
@@ -119,7 +121,7 @@ const localTools = [
   { type: "function", function: { name: "set_course_build_requirements", description: "Record the user's requested quantity and chapter coverage before authoring. Omit quantity only when none was requested.", parameters: z.toJSONSchema(buildRequirementsSchema) } },
   { type: "function", function: { name: "get_course_question", description: "Read a saved question and its current revision before QA.", parameters: { type: "object", properties: { questionId: { type: "string" } }, required: ["questionId"] } } },
   { type: "function", function: { name: "upsert_course_question", description: "Before the first complete save, stage questions without changing the library. Commit staged questions by omitting questions in save_course_build. After saving, only exact-revision edits of active questions are allowed. Save a single schema-valid question incrementally. Does not mark the whole build complete.", parameters: { type: "object", properties: { question: z.toJSONSchema(questionSchema), expectedRevision: { type: "integer" } }, required: ["question"] } } },
-  { type: "function", function: { name: "record_question_review", description: "Optionally record QA of an exact saved question revision after inspecting original evidence. Not required to save.", parameters: { type: "object", properties: { questionId: { type: "string" }, expectedRevision: { type: "integer" }, review: z.toJSONSchema(agentQuestionReviewSchema) }, required: ["questionId", "expectedRevision", "review"] } } },
+  { type: "function", function: { name: "record_question_review", description: "Optionally record QA of an exact saved question revision after inspecting original evidence. Attribution is agent-supplied; reviewer independence is not authenticated. Identify author self-reviews honestly. Not required to save.", parameters: { type: "object", properties: { questionId: { type: "string" }, expectedRevision: { type: "integer" }, review: z.toJSONSchema(agentQuestionReviewSchema) }, required: ["questionId", "expectedRevision", "review"] } } },
   { type: "function", function: { name: "get_course", description: "Read the selected course metadata and existing generated artifacts.", parameters: { type: "object", properties: {}, additionalProperties: false } } },
   { type: "function", function: { name: "get_course_artifact", description: "Read a saved artifact as paginated JSON text before updating a course. Concatenate content pages until nextOffset is null, then parse JSON. The revision identifies changes between pages; restart reading if it changes.", parameters: z.toJSONSchema(artifactPageSchema) } },
   { type: "function", function: { name: "list_course_questions", description: "Read the active saved question bank in pages before updating a course. Use get_course_question for an exact question read before QA.", parameters: z.toJSONSchema(questionPageSchema) } },
@@ -143,6 +145,7 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
     const artifactContract = getSystemPrompt("artifactContract", promptOverrides);
     const course = store.getCourse(job.courseId);
     if (!course) throw new Error("The selected course is not available to the local agent.");
+    const revisionGuard = courseBuildRevision(store, job.courseId);
     updateJob(job, "Starting coordinator", `Running ${settings.model} with the master and course-specific prompts.${!course.videoUrl ? " The coordinator will read the course source; no transcript is required." : course.transcript?.length ? "" : " The coordinator will acquire public captions before building."}`);
     const messages: ChatMessage[] = [{ role: "user", content: `${composeCourseBuildPrompt(String(course.title), String(course.id), String(course.coursePrompt), String(course.promptCredit), getSystemPrompt("courseBuilderMaster", promptOverrides))}\n\n${getSystemPrompt("coordinatorRuntime", promptOverrides)}` }];
     const tools: unknown[] = [...localTools, ...(settings.provider === "openrouter" && settings.enableWebSearch ? [{ type: "openrouter:web_search", max_total_results: 10, search_context_size: "high" }] : [])];
@@ -175,7 +178,7 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
           signal.throwIfAborted();
           const args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
           if (call.function.name === "set_course_build_requirements") {
-            result = store.setBuildRequirements(String(course.id), buildRequirementsSchema.parse(args));
+            result = revisionGuard.run(() => store.setBuildRequirements(String(course.id), buildRequirementsSchema.parse(args)));
           } else if (call.function.name === "get_course_question") {
             const id = String(args.questionId);
             result = stagedQuestions.has(id) ? { staged: true, payload: stagedQuestions.get(id) } : reviewEvidence.readQuestion(store.getQuestion(String(course.id), id));
@@ -193,13 +196,13 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
             } else {
               const questions = store.activeQuestionPayloads(String(course.id)).map(q => q.id === question.id ? question : q);
               if (!current || expectedRevision === undefined) throw new Error("After saving, only existing questions can be edited. Start a new complete build to add questions.");
-              result = store.saveCourseBuild(String(course.id), { questions }, { id: question.id, expectedRevision });
+              result = revisionGuard.run(() => store.saveCourseBuild(String(course.id), { questions }, { id: question.id, expectedRevision }));
             }
           } else if (call.function.name === "record_question_review") {
             const questionId = String(args.questionId);
             if (stagedQuestions.has(questionId)) throw new Error("Commit staged questions before recording their QA.");
             const revision = z.number().int().min(1).parse(args.expectedRevision);
-            result = store.reviewQuestion(String(course.id), questionId, revision, reviewEvidence.validate(questionId, revision, args.review), "local-model");
+            result = revisionGuard.run(() => store.reviewQuestion(String(course.id), questionId, revision, reviewEvidence.validate(questionId, revision, args.review), "local-model"));
           } else if (call.function.name === "get_course") {
             Object.assign(course, store.getCourse(job.courseId));
             result = { id: course.id, title: course.title, sourceUrl: course.sourceUrl, videoUrl: course.videoUrl, coursePrompt: course.coursePrompt, promptCredit: course.promptCredit, transcriptCues: course.transcript.length, buildRequirements: store.getBuildRequirements(String(course.id)), existing: { chapters: course.chapters?.length ?? 0, questions: store.listQuestions(job.courseId).total, hasStudyGuide: Boolean(course.studyGuide) }, readArtifacts: { tool: "get_course_artifact", artifacts: artifactPageSchema.shape.artifact.options }, readQuestions: "list_course_questions" };
@@ -223,7 +226,7 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
             const transcriptHash = store.transcriptHash(String(course.id));
             const acquired = await (dependencies.acquireTranscript ?? acquireYouTubeTranscript)(String(course.videoUrl ?? course.videoId ?? course.id), String(args.preferredLanguage ?? "en"), signal);
             signal.throwIfAborted();
-            store.replaceTranscript(String(course.id), acquired.cues, transcriptHash);
+            revisionGuard.run(() => store.replaceTranscript(String(course.id), acquired.cues, transcriptHash));
             course.transcript = acquired.cues;
             job.transcriptCues = acquired.cues.length;
             result = { saved: true, cues: acquired.cues.length, videoId: acquired.videoId, language: acquired.language, trackName: acquired.trackName, automaticallyGenerated: acquired.automaticallyGenerated, sourceUrl: acquired.sourceUrl, acquiredAt: acquired.acquiredAt };
@@ -254,7 +257,7 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
             if (!chapters.length || !questions.length) throw new Error("The agent tried to save an empty chapter or question collection.");
             if (!conceptGraph) throw new Error("The agent tried to save a course without its concept graph.");
             try {
-              result = store.saveCourseBuild(String(course.id), { studyGuide: args.studyGuide, researchNotes: args.researchNotes + "\n\nRetrieval manifest (fetch success is not factual QA):\n" + JSON.stringify(sourceEvidence, null, 2), chapters, questions, conceptGraph });
+              result = revisionGuard.run(() => store.saveCourseBuild(String(course.id), { studyGuide: args.studyGuide as string, researchNotes: args.researchNotes + "\n\nRetrieval manifest (fetch success is not factual QA):\n" + JSON.stringify(sourceEvidence, null, 2), chapters, questions, conceptGraph }));
             } catch (error) {
               result = { saved: false, validationError: error instanceof Error ? error.message : "Invalid artifacts", guidance: "Nothing was saved. Correct the JSON to match the tool schema and recorded requirements; do not fabricate evidence." };
               messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
@@ -321,7 +324,7 @@ export function startModelProviderServer(settingsPath: string, databasePath: str
   const corsHeaders = (request: Request) => {
     const origin = request.headers.get("origin");
     const appPort = Number(process.env.VIDMARK_APP_PORT ?? 3010);
-    const allowedOrigins = (process.env.VIDMARK_ALLOWED_ORIGINS ?? `http://127.0.0.1:${appPort},http://localhost:${appPort}`).split(",");
+    const allowedOrigins = (process.env.VIDMARK_ALLOWED_ORIGINS ?? `http://127.0.0.1:${appPort},http://localhost:${appPort}`).split(",").map(origin => origin.trim()).filter(Boolean);
     const allowed = origin && allowedOrigins.includes(origin) ? origin : allowedOrigins[0];
     return { "Access-Control-Allow-Origin": allowed, "Access-Control-Allow-Methods": "GET, PUT, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type" };
   };
