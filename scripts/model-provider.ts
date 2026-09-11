@@ -159,10 +159,11 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
     const sourceTexts: string[] = [];
     messages.unshift({ role: "system", content: `Current date: ${new Date().toISOString().slice(0, 10)}. ${artifactContract}` });
 
-    // Progress-only responses have a separate bounded allowance so status updates
-    // do not consume the existing 40 authoring/recovery turns.
+    // The first 40 progress-only responses are extra, not authoring turns.
+    // Further reports consume the normal budget: at most 80 responses overall,
+    // without stopping useful work merely because the progress allowance ran out.
     let workTurns = 0, progressTurns = 0;
-    for (let turn = 0; workTurns < 40 && progressTurns < 40; turn += 1) {
+    for (let turn = 0; workTurns < 40 && turn < 80; turn += 1) {
       signal.throwIfAborted();
       updateJob(job, `Agent turn ${turn + 1}`, "The coordinator is reading evidence or delegating specialist work.");
       const modelStarted = Date.now();
@@ -173,7 +174,7 @@ export const runBuild = async (job: BuildJob, settings: ProviderSettings, databa
       messages.push(assistant);
       if (assistant.content?.trim()) job.agentMessage = publicAgentMessage(assistant.content);
       const calls = assistant.tool_calls ?? [];
-      if (calls.length && calls.every(call => call.function.name === "report_build_progress")) progressTurns += 1;
+      if (progressTurns < 40 && calls.length && calls.every(call => call.function.name === "report_build_progress")) progressTurns += 1;
       else workTurns += 1;
       if (!calls.length) {
         if (saved) break;

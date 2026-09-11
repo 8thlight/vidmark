@@ -13,5 +13,6 @@ export type BuildProgress = {
 // Public status text only. Never feed this back into the agent as instructions.
 export function publicAgentMessage(message: string, limit = 6000) {
   return message.replace(/http:\/\/127\.0\.0\.1:\d+\/mcp\/[a-zA-Z0-9-]+/g, "[temporary MCP endpoint]")
-    .replace(/\b(?:sk-|Bearer )[A-Za-z0-9_-]{12,}/g, "[redacted]").slice(0, limit);
+    .replace(/\bBearer\s+\S+/gi, "[redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}/g, "[redacted]").slice(0, limit);
 }

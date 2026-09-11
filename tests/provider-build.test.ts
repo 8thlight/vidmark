@@ -42,6 +42,25 @@ test("local provider reports live work without consuming authoring turns or clai
   expect(job.agentMessage).toBe("Public coordinator update");
 });
 
+test("using every extra progress turn still permits an atomic save, while report-only loops remain bounded", async () => {
+  const job = jobFor("provider-progress-budget"); let turn = 0;
+  await runBuild(job, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
+    fetchResearch, callModel: async () => {
+      turn += 1;
+      if (turn === 1) return tool("set_course_build_requirements", { questionCount: 1 });
+      if (turn <= 41) return tool("report_build_progress", { message: `Working on source ${turn}` });
+      if (turn === 42) return tool("save_course_build", artifacts);
+      return { role: "assistant", content: "Done" };
+    },
+  });
+  expect(turn).toBe(43); expect(job.status).toBe("complete"); expect(job.progress?.savedQuestions).toBe(1);
+  const endless = jobFor("provider-progress-endless"); let reports = 0;
+  await runBuild(endless, settings, databasePath, join(root, "prompts.json"), debug, new AbortController().signal, {
+    fetchResearch, callModel: async () => { reports += 1; return tool("report_build_progress", { message: "Still working" }); },
+  });
+  expect(reports).toBe(80); expect(endless.status).toBe("failed"); expect(endless.progress?.saved).toBe(false); expect(db.listQuestions(endless.courseId).total).toBe(0);
+});
+
 test("model hosts reject query strings, fragments and credentials before paths are appended", () => {
   for (const suffix of ["?tenant=one", "#fragment", "?", "#"]) expect(() => normalizeBaseUrl(`http://localhost:11434/v1${suffix}`)).toThrow("query string or fragment");
   expect(() => normalizeBaseUrl("http://user:secret@localhost/v1")).toThrow("credentials");

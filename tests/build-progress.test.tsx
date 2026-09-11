@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { BuildProgressView } from "../app/build-progress-view";
-import type { BuildProgress } from "../app/build-progress";
+import { publicAgentMessage, type BuildProgress } from "../app/build-progress";
 import { CourseBuildProgress, buildProgressReportSchema } from "../scripts/build-progress";
 import { cliResultMessage } from "../scripts/agent-harness";
 import { createCourseAgentSession } from "../scripts/course-agent-session";
@@ -96,6 +96,15 @@ test("public CLI text excludes reasoning, tool payloads and child-agent messages
   expect(cliResultMessage("claude", claude([{ type: "text", text: "child output" }], { parent_tool_use_id: "child" }))).toBeUndefined();
   expect(cliResultMessage("codex", JSON.stringify({ type: "item.completed", item: { type: "reasoning", text: "private" } }))).toBeUndefined();
   expect(cliResultMessage("claude", '{"type":"result","subtype":"success","result":"Done"}')).toBe("Done");
+});
+
+test("public status redacts complete JWT and opaque bearer tokens before truncation", () => {
+  for (const scheme of ["Bearer", "bearer", "BEARER"]) for (const token of ["eyJhbGciOiJIUzI1NiJ9.payload.signature", "opaque+/token==", "short"]) {
+    const message = publicAgentMessage(`Before ${scheme} ${token} after`);
+    expect(message).toBe("Before [redacted] after"); expect(message).not.toContain(token);
+    expect(cliResultMessage("codex", JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: `${scheme} ${token}` } }))).toBe("[redacted]");
+  }
+  expect(publicAgentMessage("Bearer " + "a".repeat(7000) + ".payload.signature after")).toBe("[redacted] after");
 });
 
 test("progress UI distinguishes reported positions, staged drafts and saved counts without invented percentages", () => {
