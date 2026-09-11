@@ -30,9 +30,9 @@ Question shares arrive as pending imports. The recipient can compare their local
 
 | Artifact | Purpose |
 | --- | --- |
-| [Vidmark 1.4.4 for macOS](releases/Vidmark-1.4.4.dmg) | Complete desktop application |
-| [Claude Desktop MCP Bundle](releases/Vidmark-1.4.4.mcpb) | Preferred Claude Desktop extension |
-| [Claude Desktop DXT build](releases/Vidmark-1.4.4.dxt) | Compatibility package for Claude versions that request `.dxt` |
+| [Vidmark 1.4.5 for macOS](releases/Vidmark-1.4.5.dmg) | Complete desktop application |
+| [Claude Desktop MCP Bundle](releases/Vidmark-1.4.5.mcpb) | Preferred Claude Desktop extension |
+| [Claude Desktop DXT build](releases/Vidmark-1.4.5.dxt) | Compatibility package for Claude versions that request `.dxt` |
 
 Open the disk image, drag Vidmark to Applications, and launch it. The repository build is ad-hoc signed rather than Apple-notarized, so the first launch may require Control-clicking Vidmark, choosing **Open**, and confirming.
 

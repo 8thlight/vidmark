@@ -6,6 +6,21 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>Vidmark</title>
         <item>
+            <title>1.4.5</title>
+            <pubDate>Fri, 11 Sep 2026 13:14:40 -0400</pubDate>
+            <sparkle:version>14</sparkle:version>
+            <sparkle:shortVersionString>1.4.5</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Vidmark 1.4.5
+
+- Replaces the small search glyph with a clear, consistently sized magnifying-glass icon.
+- Keeps the icon aligned and prevents it from shrinking in narrow windows.
+- Gives the search field a descriptive screen-reader label.
+]]></description>
+            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.4.5.dmg" length="41791470" type="application/octet-stream" sparkle:edSignature="wum3yr6pa84Lli2/nwu8QhKSRVC09nx78vO2dJh515m2jNgT/jnoKXiDzqXeomuM7u2PUethkxCrdyL9kFKfBQ=="/>
+        </item>
+        <item>
             <title>1.4.4</title>
             <pubDate>Fri, 11 Sep 2026 12:42:19 -0400</pubDate>
             <sparkle:version>13</sparkle:version>
@@ -37,25 +52,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 ]]></description>
             <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.4.3.dmg" length="41768703" type="application/octet-stream" sparkle:edSignature="8x6aE1cShIQ2VHFmZxjsVA5l95gr8pxq5SSmFYyGC8DQbud1hqlFRiTqMmBOwpPUqUoVaOx1+OHLGj/FGo1UDQ=="/>
         </item>
-        <item>
-            <title>1.4.2</title>
-            <pubDate>Fri, 11 Sep 2026 11:57:40 -0400</pubDate>
-            <sparkle:version>11</sparkle:version>
-            <sparkle:shortVersionString>1.4.2</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Vidmark 1.4.2
-
-- Fixes provider names and status text that were difficult to read in dark mode.
-- Uses a white OpenAI logo in dark mode while preserving Claude's brand color.
-- Makes selected provider cards follow the current theme, including the in-app agent icon.
-- Retains the selection border and keyboard focus indicator in both themes.
-]]></description>
-            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.4.2.dmg" length="41440318" type="application/octet-stream" sparkle:edSignature="rXbWV0uakGM54Ayc6opSt2NP3OOr0pkyhUpiPJ+DIRBGMyTXs/v85lAJfCO8orrkLbRJEAXKgTWbrFhR1RKNDQ=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: jhzgLXSzt+837Y5fDuKM8cDy4d97m+zbi6/q+fGQHjHCWl29dWPIPrfZWWC+3BQCrB0aMkGiLdYdFcdc+Fm0BA==
-length: 3918
+edSignature: 14AuAO2wWQ15V7ODKSuBGOHErYfpPplQ67pn+cDKYGblrgnGPnigCohom3BHlhwQponFK2XCcGEq5bXJE9siAQ==
+length: 3816
 -->
