@@ -1110,13 +1110,15 @@ body:has(.app-shell[data-theme="dark"]) { background:#0b1423; }
 
 .agent-provider-radios { border: 0; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .agent-provider-radios legend { font-size: 13px; font-weight: 700; padding: 0 0 10px; }
-.agent-harness-picker .agent-provider-radio { display: flex; position: relative; align-items: center; gap: 12px; padding: 18px 12px; border: 2px solid var(--line, #dce2ec); border-radius: 12px; background: var(--panel, #fff); cursor: pointer; min-width: 0; }
-.agent-harness-picker .agent-provider-radio.selected { border-color: var(--orange, #f36a33); background: #fff4ef; }
+.agent-harness-picker .agent-provider-radio { display: flex; position: relative; align-items: center; gap: 12px; padding: 18px 12px; border: 2px solid var(--line, #dce2ec); border-radius: 12px; background: var(--panel, #fff); color: var(--ink); cursor: pointer; min-width: 0; }
+.agent-harness-picker .agent-provider-radio.selected { border-color: var(--accent); background: var(--accent-soft); }
 .agent-provider-radio:focus-within { outline: 3px solid #527bb7; outline-offset: 3px; }
 .agent-provider-radio input[type=radio] { position: absolute; width: 1px; height: 1px; opacity: 0; padding: 0; }
 .agent-provider-radio img, .agent-provider-radio > svg { width: 30px; height: 30px; flex-shrink: 0; }
-.agent-provider-radio b { display: block; font-size: 13px; color: #142036; }
-.agent-provider-radio small { display: block; margin-top: 5px; line-height: 1.5; font-size: 11px; color: #56647c; }
+.agent-provider-radio b { display: block; font-size: 13px; color: var(--ink); }
+.agent-provider-radio small { display: block; margin-top: 5px; line-height: 1.5; font-size: 11px; color: var(--provider-card-muted, #56647c); }
+.app-shell[data-theme="dark"] .agent-harness-picker { --provider-card-muted: var(--muted); }
+.app-shell[data-theme="dark"] .agent-provider-radio img[src$="/openai.svg"] { filter: brightness(0) invert(1); }
 .agent-provider-radios:disabled { opacity: .6; }
 .course-agent-build { margin: 24px 0; }
 .course-agent-build > p { margin: 10px 0; font-size: 12px; line-height: 1.6; color: var(--muted, #64748b); }
