@@ -542,7 +542,7 @@ button { color:inherit; }
 .build-progress-counts { grid-template-columns:repeat(3,minmax(0,1fr)); }
 .build-progress-counts dd { font-size:18px; font-weight:700; font-variant-numeric:tabular-nums; }
 .build-progress .build-progress-note { color:var(--muted); font-size:11px; }
-.build-progress-update { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
+.build-progress-update { margin-bottom:12px; padding-bottom:4px; }
 .build-progress-update p { white-space:pre-wrap; margin-top:4px; }
 .build-progress .agent-result-message { max-height:180px; overflow:auto; font-size:11px; }
 @media (max-width:600px) { .build-progress-counts { grid-template-columns:1fr; gap:8px; } .build-progress-counts>div { display:flex; justify-content:space-between; align-items:center; gap:10px; } .build-progress-counts dd { margin:0; } }

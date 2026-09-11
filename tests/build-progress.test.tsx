@@ -116,6 +116,22 @@ test("progress UI distinguishes reported positions, staged drafts and saved coun
   expect(unknown).not.toContain(" / "); expect(unknown).toContain("No completed course was saved"); expect(unknown).toContain("Staged drafts are not retained");
 });
 
+test("reported positions remain visible after staging, reading or reviewing a question without relabeling a different item", () => {
+  let progress!: BuildProgress;
+  const tracker = new CourseBuildProgress(value => { progress = value; });
+  tracker.report(report);
+  for (const label of ["Question staged", "Reading question", "Question review recorded"]) {
+    tracker.question(label, { question: report.question.title, chapter: report.chapter.title }, 1);
+    const html = renderToStaticMarkup(<BuildProgressView progress={progress} running />);
+    expect(html).toContain("Chapter 2 of 10"); expect(html).toContain("Question 4 of 30"); expect(html).toContain(label);
+  }
+  tracker.question("Reading question", { question: "An unrelated question?", chapter: "Another chapter" });
+  expect(progress.activity?.question?.position).toBeUndefined(); expect(progress.activity?.chapter?.position).toBeUndefined();
+  expect(progress.report).toEqual(report);
+  const html = renderToStaticMarkup(<BuildProgressView progress={progress} running />);
+  expect(html).toContain("Latest agent update"); expect(html).toContain("Question 4 of 30"); expect(html).toContain("An unrelated question?");
+});
+
 test("progress instructions are visible and overridable for both coordinator types", () => {
   for (const id of ["cliCoordinator", "coordinatorRuntime"] as const) {
     expect(getSystemPrompt(id)).toContain("report_build_progress");
