@@ -1,6 +1,7 @@
 import { ChevronDown } from "lucide-react";
 import type { ExamQuestion } from "./exam-data";
 import { chapterVideos, webUrl, youtubeId } from "./course-source";
+import { CourseMarkdown } from "./course-markdown";
 
 export function CourseChapters({ chapters, query, onNotes, onPractice, questionBank = [] }: { chapters: Array<Record<string, unknown>>; query: string; onNotes: (id: string) => void; onPractice?: (id: string) => void; questionBank?: ExamQuestion[] }) {
   const search = query.trim().toLowerCase();
@@ -22,7 +23,7 @@ export function CourseChapters({ chapters, query, onNotes, onPractice, questionB
         </summary>
         <div className="reading-chapter-body">
         {objectives.length ? <ul>{objectives.map((objective, i) => <li key={i}>{String(objective)}</li>)}</ul> : null}
-        {chapter.content ? <p className="chapter-content">{String(chapter.content)}</p> : null}
+        {chapter.content ? <CourseMarkdown className="chapter-content">{String(chapter.content)}</CourseMarkdown> : null}
         <div className="reading-chapter-actions">
           <button type="button" onClick={() => onNotes(String(chapter.id ?? `chapter-${index + 1}`))}>Take notes</button>
           {onPractice && questionCount > 0 ? <button type="button" onClick={() => onPractice(String(chapter.id))}>Practice {questionCount} {questionCount === 1 ? "question" : "questions"}</button> : null}

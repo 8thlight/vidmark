@@ -1096,7 +1096,38 @@ body:has(.app-shell[data-theme="dark"]) { background:#0b1423; }
   .reading-chapter > .reading-chapter-row { grid-template-columns: 30px minmax(0, 1fr) 20px; gap: 8px; }
   .reading-chapter-body { padding: 0 6px 22px 44px; }
 }
-.chapter-content, .guide-intro p { white-space: pre-wrap; }
+.course-markdown { min-width: 0; color: var(--ink); line-height: 1.65; overflow-wrap: anywhere; white-space: normal; }
+.study-guide-content { font-size: 14px; }
+.course-markdown :is(p, ul, ol, blockquote, pre, .course-markdown-table) { margin: 0 0 1em; }
+.course-markdown p { color: inherit; font-size: inherit; line-height: inherit; }
+.course-markdown :is(h3, h4, h5, h6) { color: var(--ink); margin: 1.4em 0 .6em; line-height: 1.3; }
+.course-markdown h3 { font: 700 1.5em/1.3 Georgia,serif; }
+.course-markdown h4 { font: 700 1.25em/1.3 Georgia,serif; }
+.course-markdown :is(h5, h6) { font-size: 1em; font-weight: 700; }
+.course-markdown > :first-child { margin-top: 0; }
+.course-markdown > :last-child { margin-bottom: 0; }
+.course-markdown ul { padding-left: 1.5em; list-style: disc; }
+.course-markdown ol { padding-left: 1.5em; list-style: decimal; }
+.course-markdown li + li { margin-top: .35em; }
+.course-markdown li > :is(ul, ol) { margin: .35em 0; }
+.course-markdown li > p { margin-bottom: .35em; }
+.course-markdown strong { font-weight: 700; }
+.course-markdown em { font-style: italic; }
+.course-markdown a { color: inherit; font-size: inherit; font-weight: 600; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.course-markdown a:hover { text-decoration-thickness: 2px; }
+.course-markdown :is(a, .course-markdown-table):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.course-markdown blockquote { border-left: 3px solid var(--accent); padding: .25em 1em; color: var(--muted); }
+.course-markdown blockquote > :last-child { margin-bottom: 0; }
+.course-markdown code { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: .9em; background: var(--panel); border-radius: 4px; padding: .1em .3em; }
+.course-markdown pre { max-width: 100%; overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1em; white-space: pre; }
+.course-markdown pre code { padding: 0; border: 0; background: none; overflow-wrap: normal; }
+.course-markdown-table { max-width: 100%; overflow-x: auto; }
+.course-markdown table { width: 100%; border-collapse: collapse; font-size: .95em; }
+.course-markdown :is(th, td) { min-width: 7em; padding: .6em .8em; border: 1px solid var(--line); text-align: left; }
+.course-markdown th { background: var(--panel); font-weight: 700; }
+.course-markdown hr { border: 0; border-top: 1px solid var(--line); margin: 1.5em 0; }
+.course-markdown .contains-task-list { list-style: none; padding-left: 0; }
+.course-markdown .task-list-item input { width: auto; margin-right: .5em; }
 .chapter-videos { margin-top: 24px; }
 .chapter-videos details { margin: 12px 0; }
 .chapter-videos summary { cursor: pointer; padding: 10px 0; }
