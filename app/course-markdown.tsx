@@ -23,9 +23,12 @@ function scopeFootnoteLabel({ prefix }: { prefix: string }) {
 
 const components: Components = {
   h1: "h3", h2: "h4", h3: "h5", h4: "h6", h5: "h6", h6: "h6",
-  a: ({ href, children, title, id, "aria-label": label, "aria-describedby": description }) => href
-    ? <a href={href} title={title} id={id} aria-label={label} aria-describedby={description} target={href.startsWith("#") ? undefined : "_blank"} rel={href.startsWith("#") ? undefined : "noopener noreferrer"}>{children}</a>
-    : <span>{children}</span>,
+  a: ({ href, children, ...props }) => {
+    delete props.node; // The syntax-tree node is not a DOM attribute.
+    return href
+      ? <a {...props} href={href} target={href.startsWith("#") ? undefined : "_blank"} rel={href.startsWith("#") ? undefined : "noopener noreferrer"}>{children}</a>
+      : <span>{children}</span>;
+  },
   // Do not fetch third-party images just by opening a shared course.
   img: ({ src, alt }) => typeof src === "string" && src
     ? <a href={src} target="_blank" rel="noopener noreferrer">{alt || "Open image"} ↗</a>

@@ -58,6 +58,14 @@ test("footnotes stay in the app and have distinct IDs across course sections", (
   expect(ids.length).toBeGreaterThan(2); expect(new Set(ids).size).toBe(ids.length);
   const anchors = [...html.matchAll(/<a [^>]*href="#([^"]+)"[^>]*>/g)];
   expect(anchors.length).toBe(4);
+  expect([...html.matchAll(/data-footnote-ref=/g)].length).toBe(2);
+  expect([...html.matchAll(/data-footnote-backref=/g)].length).toBe(2);
+  expect([...html.matchAll(/aria-label="Back to reference 1"/g)].length).toBe(2);
+  const descriptions = [...html.matchAll(/aria-describedby="([^"]+)"/g)].map(match => match[1]);
+  expect(descriptions.length).toBe(2);
+  for (const id of descriptions) expect(ids).toContain(id);
+  expect(new Set(descriptions).size).toBe(2);
+  expect(html).not.toContain("node=");
   for (const [tag, id] of anchors) {
     expect(ids).toContain(id); expect(tag).not.toContain('target="_blank"');
   }

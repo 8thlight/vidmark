@@ -19,7 +19,7 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 - Keeps shared content safe: raw HTML and non-web links are blocked, and remote images open only when clicked.
 - Preserves saved course content, notes, and provider preferences.
 ]]></description>
-            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.4.3.dmg" length="41768866" type="application/octet-stream" sparkle:edSignature="FxU/IHEmLs5AZ1bNZgmXL1aub9KKo3HCfI9PoGAD/GvTLN09yY89uRFUKgyt6jyx8Pv61XqTtkBrYdclw0hDBg=="/>
+            <enclosure url="https://vidmark-159-223-136-163.sslip.io/updates/Vidmark-1.4.3.dmg" length="41768703" type="application/octet-stream" sparkle:edSignature="8x6aE1cShIQ2VHFmZxjsVA5l95gr8pxq5SSmFYyGC8DQbud1hqlFRiTqMmBOwpPUqUoVaOx1+OHLGj/FGo1UDQ=="/>
         </item>
         <item>
             <title>1.4.2</title>
@@ -59,6 +59,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: cnPa/HIQqjXZFbfdcqWLPviPbnEIlNwKQU19Ly22Bzs6Gh2OFZlMzeECRbx7pkUC/TOqVl/TmdxHOHN4bR6NAg==
+edSignature: 5XdU0aLVZDG72Cp/JW4SgUvLfLP41HT7nGHE6XyFLhteuk9ok8SRXI3h70n+RkGP58fGE5cyWaqRRYyoZLBcCw==
 length: 4210
 -->
