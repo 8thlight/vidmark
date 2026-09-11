@@ -26,5 +26,8 @@ test("server-renders the Vidmark workspace", async () => {
   assert.match(visibleHtml, /2\s+courses/i);
   assert.match(html, /exam scenarios/i);
   assert.match(html, /<strong>100<\/strong><span>exam scenarios<\/span>/i);
+  assert.match(html, /<svg[^>]*width="20"[^>]*height="20"[^>]*class="[^"]*global-search-icon[^"]*"[^>]*aria-hidden="true"[^>]*focusable="false"/);
+  assert.match(html, /<input[^>]*aria-label="Search concepts, chapters, or captions"/);
+  assert.doesNotMatch(html, /⌕/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });

@@ -52,7 +52,8 @@ button { color:inherit; }
 .dot-grid { font-size:14px; line-height:7px; letter-spacing:2px; color:var(--accent); }
 .chevron { color:var(--muted); margin-left:6px; }
 .global-search { height:42px; border:1px solid var(--line); background:var(--paper); border-radius:11px; padding:0 12px; display:flex; align-items:center; gap:9px; }
-.global-search input { border:0; outline:0; background:transparent; width:100%; color:var(--ink); font-size:13px; }
+.global-search-icon { width:20px; height:20px; flex:0 0 20px; color:var(--muted); }
+.global-search input { border:0; outline:0; background:transparent; width:100%; min-width:0; color:var(--ink); font-size:13px; }
 .global-search kbd { border:1px solid #d8dde6; background:white; color:#8a92a3; border-radius:5px; padding:3px 6px; font-size:10px; white-space:nowrap; }
 .add-button { justify-self:end; border:0; border-radius:9px; background:var(--navy); color:white; padding:11px 16px; font-weight:700; font-size:12px; cursor:pointer; }
 .add-button:hover { background:#23304a; }

@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ClipboardCheck, Copy, Ellipsis, Eye, EyeOff, FileText, LibraryBig, Mail, MessageCircle, Mic, Moon, NotebookPen, PanelLeft, Settings2, SunMedium, UsersRound } from "lucide-react";
+import { ClipboardCheck, Copy, Ellipsis, Eye, EyeOff, FileText, LibraryBig, Mail, MessageCircle, Mic, Moon, NotebookPen, PanelLeft, Search, Settings2, SunMedium, UsersRound } from "lucide-react";
 import { AgentProviderDialog } from "./agent-provider";
 import { SidebarAgentSelection } from "./agent-selection";
 import { ccaFoundationsOriginPrompt, ccaFoundationsPromptCredit, composeCourseBuildPrompt, kubernetesCourseOriginPrompt, kubernetesCoursePromptCredit, vidmarkMasterCourseBuildPrompt } from "./course-prompts";
@@ -483,7 +483,7 @@ export default function Home() {
           <button className="library-trigger" onClick={() => setLibraryOpen(true)}>
             <span className="dot-grid">••<br />••</span><span><b>Course library</b><small>{library.length} {library.length === 1 ? "course" : "courses"} · device library</small></span><span className="chevron">⌄</span>
           </button>
-          <label className="global-search"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search concepts, chapters, or captions…" /><kbd>⌘ K</kbd></label>
+          <label className="global-search"><Search className="global-search-icon" size={20} aria-hidden="true" focusable="false" /><input aria-label="Search concepts, chapters, or captions" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search concepts, chapters, or captions…" /><kbd aria-hidden="true">⌘ K</kbd></label>
           <button className="add-button" onClick={() => setLibraryOpen(true)}>＋ Add course</button>
         </header>
 
